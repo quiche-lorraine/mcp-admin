@@ -1,0 +1,9 @@
+[Unit]
+Description=infra-mcp - synchronisation du repo toutes les 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

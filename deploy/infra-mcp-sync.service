@@ -1,0 +1,8 @@
+[Unit]
+Description=infra-mcp - met à jour le repo Ansible depuis Git
+
+[Service]
+Type=oneshot
+User=infra-mcp
+WorkingDirectory=/opt/infra
+ExecStart=/usr/bin/git pull --ff-only --quiet

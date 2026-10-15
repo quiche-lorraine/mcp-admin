@@ -1,0 +1,98 @@
+- name: Vérifie les valeurs verrouillées (policy/locked.yml)
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.vars', item.key) == item.value
+    fail_msg: "{{ item.key }} est verrouillée à « {{ item.value }} » : surcharge interdite"
+    quiet: true
+  loop: "{{ locked_vars | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Additionne les couches (global + groupes + hôte)
+  ansible.builtin.set_fact:
+    _packages_present: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_present_')) | flatten | unique }}"
+    _packages_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_absent_')) | flatten | unique }}"
+    _firewall_allow: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_allow_')) | flatten | unique }}"
+    _admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
+
+# --- Paquets -----------------------------------------------------------------
+
+- name: Paquets présents
+  ansible.builtin.apt:
+    name: "{{ _packages_present }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Paquets absents
+  ansible.builtin.apt:
+    name: "{{ _packages_absent }}"
+    state: absent
+  when: _packages_absent | length > 0
+
+# --- Mises à jour de sécurité automatiques -------------------------------------
+
+- name: Configure unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52infra
+    mode: "0644"
+    content: |
+      // Géré par Ansible (rôle base) — ne pas modifier à la main.
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "{{ updates_auto_reboot | bool | lower }}";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ updates_reboot_time }}";
+
+# --- Utilisateurs admin --------------------------------------------------------
+
+- name: Utilisateurs admin
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: /bin/bash
+    create_home: true
+  loop: "{{ _admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Clés SSH des admins (exclusives : les clés hors config sont retirées)"
+  ansible.posix.authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.ssh_keys | join('\n') }}"
+    exclusive: true
+  loop: "{{ _admin_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Sudo pour les admins concernés
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ item.name }}"
+    mode: "0440"
+    content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+    validate: "visudo -cf %s"
+  loop: "{{ _admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# --- Firewall -----------------------------------------------------------------
+# Ordre important : les règles d'autorisation (SSH compris) AVANT d'activer ufw,
+# sinon on se coupe l'accès.
+
+- name: ufw installé
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Règles d'autorisation
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    src: "{{ item.src | default(omit) }}"
+  loop: "{{ _firewall_allow }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"
+
+- name: Politique entrante par défaut et activation
+  community.general.ufw:
+    state: enabled
+    direction: incoming
+    default: "{{ firewall_default_incoming }}"

@@ -1,0 +1,9 @@
+# Adresse utilisée par Swarm entre les nœuds. Si tu ajoutes un maillage
+# WireGuard, mets ici l'adresse privée plutôt que l'IP publique.
+swarm_advertise_addr: "{{ ansible_host }}"
+
+swarm_ports:
+  - { port: "2377", proto: tcp }   # gestion du cluster (managers)
+  - { port: "7946", proto: tcp }   # communication entre nœuds
+  - { port: "7946", proto: udp }
+  - { port: "4789", proto: udp }   # trafic overlay (VXLAN)

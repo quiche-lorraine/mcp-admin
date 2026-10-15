@@ -1,0 +1,14 @@
+# Serveur Coolify, qui héberge aussi le contrôleur infra-mcp.
+# Coolify installe et gère Docker lui-même.
+docker_engine_managed: false
+
+# Surcharges de niveau hôte : elles s'ajoutent aux listes globales.
+packages_present_host:
+  - git          # le contrôleur clone le repo Ansible
+  - python3-venv
+
+firewall_allow_host:
+  # Traefik (conteneur) doit joindre infra-mcp sur l'hôte. Avec ufw en deny,
+  # ce trafic est bloqué sans cette règle. Vérifie le sous-réseau avec :
+  #   docker network inspect coolify -f '{{ (index .IPAM.Config 0).Subnet }}'
+  - { port: "8765", proto: tcp, src: "10.0.1.0/24" }

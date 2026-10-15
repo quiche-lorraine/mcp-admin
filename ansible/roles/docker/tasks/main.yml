@@ -1,0 +1,37 @@
+# Docker Engine depuis le dépôt officiel. Désactivé sur les machines où un autre
+# outil gère Docker (docker_engine_managed: false, ex. le serveur Coolify).
+
+- name: Prérequis du module deb822_repository
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Dépôt Docker officiel
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] }}"
+    signed_by: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
+  register: _docker_repo
+
+- name: Docker Engine (+ SDK Python requis par les modules community.docker)
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - python3-docker
+    state: present
+    update_cache: "{{ _docker_repo is changed }}"
+
+- name: Service Docker actif
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true

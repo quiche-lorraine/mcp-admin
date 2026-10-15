@@ -1,0 +1,10 @@
+# Configuration de base de tout le parc. `plan site` = détection de dérive.
+- name: Configuration de base
+  hosts: all
+  become: true
+  vars_files:
+    - ../policy/locked.yml
+  roles:
+    - base
+    - role: docker
+      when: docker_engine_managed | default(true)

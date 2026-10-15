@@ -1,0 +1,64 @@
+# Fait rejoindre le swarm aux machines du groupe swarm_workers.
+# Le token de join est lu sur le manager au moment de l'exécution : il n'est
+# jamais écrit dans le repo, et no_log l'empêche d'apparaître dans la sortie
+# renvoyée à l'agent.
+
+- name: Ouvre les ports Swarm entre les nœuds uniquement
+  hosts: swarm
+  become: true
+  tasks:
+    - name: Autorise chaque autre nœud sur les ports Swarm
+      community.general.ufw:
+        rule: allow
+        src: "{{ hostvars[item.0].swarm_advertise_addr }}"
+        port: "{{ item.1.port }}"
+        proto: "{{ item.1.proto }}"
+      loop: "{{ groups['swarm'] | difference([inventory_hostname]) | product(swarm_ports) | list }}"
+      loop_control:
+        label: "{{ item.0 }} {{ item.1.port }}/{{ item.1.proto }}"
+
+- name: Initialise le swarm sur le premier manager et lit le token worker
+  hosts: swarm_managers[0]
+  become: true
+  tasks:
+    - name: Swarm initialisé
+      community.docker.docker_swarm:
+        state: present
+        advertise_addr: "{{ swarm_advertise_addr }}"
+      register: _swarm
+      no_log: true
+
+    - name: Garde le token worker en mémoire pour la suite
+      ansible.builtin.set_fact:
+        swarm_worker_token: "{{ _swarm.swarm_facts.JoinTokens.Worker }}"
+      no_log: true
+
+- name: Fait rejoindre les workers, un par un
+  hosts: swarm_workers
+  become: true
+  serial: 1
+  vars:
+    _manager: "{{ groups['swarm_managers'][0] }}"
+  tasks:
+    - name: Rejoint le swarm
+      community.docker.docker_swarm:
+        state: join
+        join_token: "{{ hostvars[_manager].swarm_worker_token }}"
+        remote_addrs: ["{{ hostvars[_manager].swarm_advertise_addr }}:2377"]
+        advertise_addr: "{{ swarm_advertise_addr }}"
+      register: _join
+      no_log: true
+
+- name: Fait tourner le token worker si une machine vient d'entrer
+  hosts: swarm_managers[0]
+  become: true
+  tasks:
+    - name: Rotation du token worker
+      community.docker.docker_swarm:
+        state: present
+        rotate_worker_token: true
+      no_log: true
+      when: >-
+        groups['swarm_workers'] | map('extract', hostvars)
+        | selectattr('_join', 'defined') | map(attribute='_join')
+        | selectattr('changed') | list | length > 0

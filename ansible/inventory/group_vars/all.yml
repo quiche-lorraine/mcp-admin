@@ -1,0 +1,38 @@
+# Couche globale.
+#
+# Règle de propagation des listes : chaque couche définit sa propre variable,
+# suffixée par son nom (_global, _<groupe>, _host). Le rôle base additionne
+# toutes les variables qui commencent par le même préfixe. Une couche inférieure
+# ajoute donc à la liste au lieu de la remplacer.
+#
+# Les valeurs simples (non-listes) suivent la priorité Ansible classique :
+# l'hôte gagne sur le groupe, qui gagne sur le global. Les valeurs verrouillées
+# sont dans policy/locked.yml.
+
+ansible_user: renaud
+
+packages_present_global:
+  - ca-certificates
+  - curl
+  - htop
+  - unattended-upgrades
+packages_absent_global:
+  - telnet
+
+firewall_default_incoming: deny
+firewall_allow_global:
+  - { port: "22", proto: tcp }
+  - { port: "80", proto: tcp }
+  - { port: "443", proto: tcp }
+
+admin_users_global:
+  - name: renaud
+    sudo: true
+    ssh_keys:
+      - "ssh-ed25519 AAAA...remplace-moi renaud@poste"
+      # Clé du contrôleur infra-mcp. Indispensable : authorized_key est en mode
+      # exclusif, une clé absente de cette liste est retirée des serveurs.
+      - "ssh-ed25519 AAAA...remplace-moi infra-mcp@controleur"
+
+updates_auto_reboot: true
+updates_reboot_time: "04:00"

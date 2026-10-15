@@ -1,0 +1,27 @@
+[Unit]
+Description=infra-mcp - serveur MCP de pilotage Ansible
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=infra-mcp
+Group=infra-mcp
+# IP de la passerelle du réseau Docker de Coolify : joignable par Traefik,
+# pas depuis Internet. À vérifier avec :
+#   docker network inspect coolify -f '{{ (index .IPAM.Config 0).Gateway }}'
+Environment=INFRA_MCP_HOST=10.0.1.1
+Environment=INFRA_MCP_PORT=8765
+Environment=INFRA_MCP_ANSIBLE_DIR=/opt/infra/ansible
+Environment=INFRA_MCP_TOKENS=/etc/infra-mcp/tokens.json
+Environment=INFRA_MCP_AUDIT_LOG=/var/log/infra-mcp/audit.jsonl
+ExecStart=/opt/infra-mcp/venv/bin/infra-mcp serve
+Restart=on-failure
+
+# Durcissement : le service n'écrit que dans ses propres dossiers.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/infra-mcp /var/log/infra-mcp /opt/infra
+
+[Install]
+WantedBy=multi-user.target
