@@ -1,0 +1,19 @@
+# Exemple de stack (non déployée tant qu'elle n'est pas dans swarm_stacks).
+# Règles vérifiées par la CI (tests/test_stacks_policy.py) :
+#   - image avec un tag explicite, jamais latest ;
+#   - pas de privileged, réseau/pid/ipc de l'hôte, cap_add, devices ;
+#   - pas de montage de chemins sensibles de l'hôte (/, /etc, socket Docker…) ;
+#   - secrets externes uniquement : ils sont créés par le playbook depuis le vault.
+# Une exception se déclare par service, avec sa raison : x-allow: {privileged: "…"}.
+services:
+  web:
+    image: traefik/whoami:v1.10.3
+    secrets: [whoami_token]
+    deploy:
+      replicas: 2
+      labels:
+        role: exemple
+
+secrets:
+  whoami_token:
+    external: true

@@ -1,0 +1,16 @@
+{# Fusionné par playbooks/stacks.yml au compose de chaque stack. #}
+services:
+{% for service in stack.services %}
+  {{ service }}:
+    deploy:
+      labels:
+        infra.stack-hash: "{{ stack.hash }}"
+{% endfor %}
+{% if stack.secrets %}
+secrets:
+{% for secret in stack.secrets %}
+  {{ secret }}:
+    external: true
+    name: "{{ stacks_secret_versions[secret] }}"
+{% endfor %}
+{% endif %}

@@ -66,3 +66,14 @@ def test_le_garde_fou_detecte_les_violations():
     assert _PIPE_RE.search("{{ lookup('pipe', 'id') }}")
     assert _PIPE_RE.search('{{ query("ansible.builtin.pipe", "id") }}')
     assert not _PIPE_RE.search("{{ lookup('ansible.builtin.vars', 'pipeline') }}")
+
+
+def test_pas_de_fichier_et_dossier_de_meme_nom():
+    # group_vars/x.yml et group_vars/x/ ensemble : Ansible ignore le fichier en
+    # silence, et toutes ses variables disparaissent.
+    for kind in ("group_vars", "host_vars"):
+        base = ANSIBLE_DIR / "inventory" / kind
+        if not base.is_dir():
+            continue
+        clashes = [d.name for d in base.iterdir() if d.is_dir() and (base / f"{d.name}.yml").exists()]
+        assert not clashes, f"{kind} : {clashes} existent à la fois en fichier .yml et en dossier"

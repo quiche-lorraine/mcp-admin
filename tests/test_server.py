@@ -38,7 +38,7 @@ async def test_token_read_ne_voit_pas_apply():
         async with connect(tokens.create(config.TOKENS_FILE, "read", "test")) as client:
             names = {t.name for t in await client.list_tools()}
             assert names == {"list_hosts", "host_vars", "list_playbooks", "repo_status", "plan"}
-            assert (await client.call_tool("list_playbooks", {})).data == ["site", "swarm-join"]
+            assert (await client.call_tool("list_playbooks", {})).data == ["site", "stacks", "swarm-join"]
             with pytest.raises(ToolError):
                 await client.call_tool("apply", {"playbook": "site", "limit": "all"})
 

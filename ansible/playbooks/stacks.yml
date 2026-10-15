@@ -1,0 +1,165 @@
+# Déploie les stacks Swarm déclarées dans swarm_stacks (group_vars/swarm_managers.yml),
+# chacune décrite par ansible/stacks/<nom>/compose.yml.
+#
+# docker_stack ne gère pas le check mode : en plan, il serait simplement sauté.
+# Chaque service porte donc le label infra.stack-hash (empreinte du compose) ; en
+# plan, on le compare à celui des services qui tournent pour annoncer les
+# créations, modifications et suppressions.
+
+- name: Stacks Swarm
+  hosts: swarm_managers[0]
+  become: true
+  vars:
+    stacks_path: "{{ stacks_dir | default(playbook_dir ~ '/../stacks') }}"
+  pre_tasks:
+    - name: Noms des variables vault
+      ansible.builtin.import_tasks: tasks/vault-names.yml
+
+  tasks:
+    # --- Garde-fous -------------------------------------------------------------
+
+    - name: Chaque stack a un nom valide et un compose.yml
+      ansible.builtin.assert:
+        that:
+          - item.name is match('^[a-z0-9][a-z0-9_-]*$')
+          - (stacks_path ~ '/' ~ item.name ~ '/compose.yml') is file
+        fail_msg: "stack {{ item.name }} : nom invalide ou {{ stacks_path }}/{{ item.name }}/compose.yml absent"
+        quiet: true
+      loop: "{{ swarm_stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Aucune stack n'est à la fois déployée et supprimée
+      ansible.builtin.assert:
+        that: _conflict | length == 0
+        fail_msg: "dans swarm_stacks et swarm_stacks_absent à la fois : {{ _conflict | join(', ') }}"
+        quiet: true
+      vars:
+        _conflict: "{{ swarm_stacks | map(attribute='name') | intersect(swarm_stacks_absent) }}"
+
+    - name: Les secrets utilisés sont déclarés dans swarm_secrets
+      ansible.builtin.assert:
+        that: _missing | length == 0
+        fail_msg: "stack {{ item.name }} : secrets absents de swarm_secrets : {{ _missing | join(', ') }}"
+        quiet: true
+      vars:
+        _missing: "{{ item.secrets | default([]) | difference(swarm_secrets.keys() | list) }}"
+      loop: "{{ swarm_stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # --- Secrets ------------------------------------------------------------------
+    # Une valeur modifiée crée une nouvelle version (nom_v2, nom_v3…) : un secret
+    # Swarm est immuable. Les stacks sont redéployées sur la nouvelle version.
+
+    - name: Prérequis du module docker_stack
+      ansible.builtin.apt:
+        name: [python3-jsondiff, python3-yaml]
+        state: present
+      when: stacks_install_prereqs | default(true)
+
+    - name: Secrets Docker
+      community.docker.docker_secret:
+        name: "{{ item.key }}"
+        data: "{{ item.value }}"
+        rolling_versions: true
+        versions_to_keep: 2
+      loop: "{{ swarm_secrets | dict2items }}"
+      no_log: true
+      register: stacks_secrets
+
+    - name: Version courante de chaque secret
+      ansible.builtin.set_fact:
+        stacks_secret_versions: >-
+          {{ dict(stacks_secrets.results | map(attribute='item.key')
+                  | zip(stacks_secrets.results | map(attribute='secret_name', default='(nouveau)'))) }}
+
+    # --- Stacks -------------------------------------------------------------------
+
+    - name: Lecture des compose
+      ansible.builtin.set_fact:
+        stacks_resolved: >-
+          {{ stacks_resolved | default([]) + [{
+               'name': item.name,
+               'secrets': item.secrets | default([]),
+               'compose': _compose,
+               'services': _compose.services.keys() | list,
+               'hash': (_text ~ (item.secrets | default([]) | to_json)) | hash('sha256'),
+             }] }}
+      vars:
+        _text: "{{ lookup('ansible.builtin.file', stacks_path ~ '/' ~ item.name ~ '/compose.yml') }}"
+        _compose: "{{ _text | from_yaml }}"
+      loop: "{{ swarm_stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Déploiement
+      community.docker.docker_stack:
+        name: "{{ stack.name }}"
+        compose:
+          - "{{ stack.compose }}"
+          - "{{ lookup('ansible.builtin.template', 'templates/stack-override.yml.j2') | from_yaml }}"
+        prune: true
+        with_registry_auth: true
+        # Pas de résolution par le registre : elle ajoute ou retire le digest et
+        # les plateformes selon les appels, ce qui modifie le service et le
+        # redémarre sans raison. L'image reste désignée par son tag (obligatoire,
+        # jamais latest) ; pour la figer, utilise image@sha256:… dans le compose.
+        resolve_image: never
+      loop: "{{ stacks_resolved | default([]) }}"
+      loop_control:
+        loop_var: stack
+        label: "{{ stack.name }}"
+      when: not ansible_check_mode
+      # Swarm refuse une mise à jour tant que la précédente n'est pas terminée
+      # (« update out of sequence ») : on réessaie.
+      register: stacks_deployed
+      until: stacks_deployed is succeeded
+      retries: 5
+      delay: 10
+
+    - name: Suppression des stacks retirées
+      community.docker.docker_stack:
+        name: "{{ item }}"
+        state: absent
+        absent_retries: 30
+      loop: "{{ swarm_stacks_absent }}"
+      when: not ansible_check_mode
+
+    # --- Aperçu pour plan (check mode) -------------------------------------------
+
+    - name: Services en place
+      community.docker.docker_swarm_service_info:
+        name: "{{ item.0.name }}_{{ item.1 }}"
+      loop: "{{ stacks_resolved | default([]) | subelements('services') }}"
+      loop_control:
+        label: "{{ item.0.name }}/{{ item.1 }}"
+      register: stacks_running
+      when: ansible_check_mode
+
+    - name: Changements prévus sur les stacks
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.0.name }}/{{ item.item.1 }} :
+          {{ 'à créer' if not item.exists else ('à jour' if _deployed == item.item.0.hash else 'à redéployer') }}
+      vars:
+        _deployed: "{{ item.service.Spec.Labels['infra.stack-hash'] | default('') if item.exists else '' }}"
+      changed_when: not item.exists or _deployed != item.item.0.hash
+      loop: "{{ stacks_running.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.0.name }}/{{ item.item.1 }}"
+      when: ansible_check_mode
+
+    - name: Stacks en place
+      community.docker.docker_stack_info:
+      register: stacks_existing
+      when: ansible_check_mode and swarm_stacks_absent | length > 0
+
+    - name: Stacks qui seront supprimées
+      ansible.builtin.debug:
+        msg: "{{ item }} : {{ 'à supprimer' if item in _existing else 'déjà absente' }}"
+      vars:
+        _existing: "{{ stacks_existing.results | default([]) | map(attribute='Name') | list }}"
+      changed_when: item in _existing
+      loop: "{{ swarm_stacks_absent }}"
+      when: ansible_check_mode
