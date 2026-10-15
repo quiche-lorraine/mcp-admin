@@ -6,12 +6,12 @@ Wants=network-online.target
 [Service]
 User=infra-mcp
 Group=infra-mcp
-# IP de la passerelle du réseau Docker de Coolify : joignable par Traefik,
+# IP de la passerelle du réseau Docker du reverse proxy : joignable par lui,
 # pas depuis Internet. À vérifier avec :
-#   docker network inspect coolify -f '{{ (index .IPAM.Config 0).Gateway }}'
+#   docker network inspect <réseau du proxy> -f '{{ (index .IPAM.Config 0).Gateway }}'
 Environment=INFRA_MCP_HOST=10.0.1.1
 Environment=INFRA_MCP_PORT=8765
-Environment=INFRA_MCP_ANSIBLE_DIR=/opt/infra/ansible
+Environment=INFRA_MCP_ANSIBLE_DIR=/opt/infra
 Environment=INFRA_MCP_TOKENS=/etc/infra-mcp/tokens.json
 Environment=INFRA_MCP_AUDIT_LOG=/var/log/infra-mcp/audit.jsonl
 # Mot de passe ansible-vault (0400, propriétaire infra-mcp). Ansible déchiffre

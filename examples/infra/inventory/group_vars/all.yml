@@ -14,7 +14,7 @@
 # unattended-upgrades, SSH ouvert, entrée en deny (verrouillée), telnet retiré.
 # Ces listes s'y ajoutent.
 
-ansible_user: renaud
+ansible_user: admin
 
 packages_present_global:
   - htop
@@ -24,10 +24,10 @@ firewall_allow_global:
   - { port: "443", proto: tcp }
 
 admin_users_global:
-  - name: renaud
+  - name: admin
     sudo: true
     ssh_keys:
-      - "ssh-ed25519 AAAA...remplace-moi renaud@poste"
+      - "ssh-ed25519 AAAA...remplace-moi admin@poste"
       # Clé du contrôleur infra-mcp. Indispensable : authorized_key est en mode
       # exclusif, une clé absente de cette liste est retirée des serveurs.
       - "ssh-ed25519 AAAA...remplace-moi infra-mcp@controleur"

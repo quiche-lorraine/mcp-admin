@@ -38,8 +38,8 @@ jobs:
       - name: Collection infra_mcp.core
         working-directory: src/ansible_collections/infra_mcp/core
         run: ansible-lint
-      - name: Repo de config (ansible/)
-        working-directory: ansible
+      - name: Exemple de repo de config (examples/infra)
+        working-directory: examples/infra
         run: |
           infra-mcp lint .
           ansible-playbook --syntax-check playbooks/*.yml

@@ -1,4 +1,4 @@
-"""Politique de sécurité des stacks (ansible/stacks/*/compose.yml).
+"""Politique de sécurité des stacks (stacks/*/compose.yml d’un repo de config).
 
 Merger une stack revient à lancer des conteneurs sur les nœuds du swarm : un
 conteneur privilégié ou qui monte / ou le socket Docker vaut root sur l'hôte.

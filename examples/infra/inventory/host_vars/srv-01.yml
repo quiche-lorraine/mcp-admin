@@ -1,0 +1,16 @@
+# Exemple de surcharges de niveau hôte : une machine où un autre outil gère
+# Docker, et qui héberge le contrôleur infra-mcp.
+docker_engine_managed: false
+
+# Elles s'ajoutent aux listes globales.
+packages_present_host:
+  - git          # le contrôleur clone le repo de config
+  - python3-venv
+
+firewall_allow_host:
+  # Un reverse proxy en conteneur doit joindre infra-mcp sur l'hôte : avec ufw
+  # en deny, il faut l'autoriser depuis le sous-réseau Docker.
+  - { port: "8765", proto: tcp, src: "10.0.1.0/24" }
+
+# Redémarre après le reste du parc (managers 04:00, workers 04:30).
+updates_reboot_time: "05:00"

@@ -12,9 +12,9 @@ import yaml
 
 
 BASE = {
-    "ansible_user": "renaud",
+    "ansible_user": "admin",
     "firewall_default_incoming": "deny",
-    "admin_users_global": [{"name": "renaud", "sudo": True, "ssh_keys": ["ssh-ed25519 AAAA"]}],
+    "admin_users_global": [{"name": "admin", "sudo": True, "ssh_keys": ["ssh-ed25519 AAAA"]}],
     "firewall_allow_global": [
         {"port": "22", "proto": "tcp"},
         {"port": "443", "proto": "tcp"},
@@ -85,7 +85,7 @@ def test_restreindre_une_source(tmp_path):
 @pytest.mark.parametrize(
     "layers, message",
     [
-        ({"users_absent_host": ["renaud"]}, "admin_users_* et users_absent_*"),
+        ({"users_absent_host": ["admin"]}, "admin_users_* et users_absent_*"),
         ({"users_absent_host": ["root"]}, "ne peut pas contenir root"),
         (
             {"ansible_user": "deploy", "admin_users_global": [], "users_absent_host": ["deploy"]},
@@ -118,7 +118,7 @@ def test_restreindre_une_source(tmp_path):
         ({"firewall_allow_host": [{"proto": "tcp"}]}, "règle firewall invalide"),
         # Le compte d'Ansible ne perd pas son sudo
         (
-            {"admin_users_global": [{"name": "renaud", "sudo": False, "ssh_keys": ["k"]}]},
+            {"admin_users_global": [{"name": "admin", "sudo": False, "ssh_keys": ["k"]}]},
             "le compte qu'utilise Ansible",
         ),
         ({"admin_users_global": []}, "le compte qu'utilise Ansible"),
