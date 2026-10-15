@@ -21,6 +21,7 @@ _PLAYBOOK_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 _SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault)", re.I)
 
 _apply_lock = asyncio.Lock()
+_plan_slots = asyncio.Semaphore(config.MAX_PLANS)
 
 
 def check_limit(limit: str) -> str:
@@ -130,7 +131,10 @@ async def playbook(name: str, limit: str, check: bool) -> dict:
     args = [_bin("ansible-playbook"), playbook_path(name), "--limit", check_limit(limit), "--diff"]
     if check:
         args.append("--check")
-        res = await run(*args)
+        if _plan_slots.locked():
+            raise ToolError(f"déjà {config.MAX_PLANS} plan en cours, réessaie plus tard")
+        async with _plan_slots:
+            res = await run(*args)
     else:
         # Un seul apply à la fois : deux exécutions concurrentes sur le même parc = état imprévisible.
         if _apply_lock.locked():

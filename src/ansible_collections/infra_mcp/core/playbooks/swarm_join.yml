@@ -17,6 +17,14 @@
       loop_control:
         label: "{{ item.0 }} {{ item.1.port }}/{{ item.1.proto }}"
 
+    # Les réseaux overlay des stacks sont chiffrés en IPsec (protocole ESP, sans port).
+    - name: Autorise ESP depuis chaque autre nœud (réseaux overlay chiffrés)
+      community.general.ufw:
+        rule: allow
+        src: "{{ hostvars[item].swarm_advertise_addr }}"
+        proto: esp
+      loop: "{{ groups['swarm'] | difference([inventory_hostname]) }}"
+
 - name: Initialise le swarm sur le premier manager et lit le token worker
   hosts: swarm_managers[0]
   become: true

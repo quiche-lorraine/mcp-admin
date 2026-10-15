@@ -5,10 +5,16 @@ dans le repo de config, où on pourrait les retirer en même temps qu'on les enf
 
 - plan reste une simulation : ni check_mode: false, ni lookup pipe (dans le repo
   de config comme dans la collection infra_mcp.core) ;
+- le repo de config n'apporte que des données : ni code, ni tâche sur le
+  contrôleur, ni lecture de ses fichiers (voir data_only_violations) ;
+- secrets : fichiers vault nommés vault.yml, variables vault_* utilisées seulement
+  par swarm_secrets ;
 - pas de group_vars/x.yml à côté de group_vars/x/ (Ansible ignore alors le fichier) ;
 - stacks : politique de sécurité des compose et cohérence avec l'inventaire.
 """
 
+import configparser
+import os
 import re
 from pathlib import Path
 
@@ -47,6 +53,136 @@ def real_execution_violations(path: Path) -> list[str]:
     return found
 
 
+# --- Le repo de config n'apporte que des données --------------------------------
+# plan (token read) exécute les playbooks du repo sur le contrôleur, qui détient la
+# clé SSH du parc et le mot de passe vault. Le repo ne doit donc pas pouvoir y faire
+# exécuter du code (plugin, script, ProxyCommand…) ni lire ses fichiers (lookup,
+# tâche déléguée au contrôleur, src absolu) puis les afficher dans la sortie.
+# Défense en profondeur : la relecture des PR reste la vraie barrière, le repo de
+# config vaut root sur le parc.
+
+_SKIP_DIRS = {".git", ".ansible", "__pycache__"}
+_PLUGIN_DIRS = {"library", "module_utils", "collections", "plugins"}
+_SAFE_LOOKUPS = {
+    "vars", "varnames", "template", "items", "list", "dict", "indexed_items",
+    "subelements", "nested", "together", "sequence",
+}
+_LOOKUP_RE = re.compile(r"""\b(?:lookup|query|q)\(\s*['"]([\w.]+)['"]""")
+_WITH_RE = re.compile(r"\bwith_(\w+)\s*:")
+_CONTROLLER_KEYS = {"delegate_to", "local_action", "connection", "fetch", "ansible.builtin.fetch"}
+_PATH_KEYS = {"src", "file", "include_vars", "ansible.builtin.include_vars", "vars_files"}
+_CONNECTION_VAR_RE = re.compile(
+    r"^ansible_(connection|ssh_common_args|ssh_extra_args|ssh_args|scp_extra_args|sftp_extra_args"
+    r"|ssh_executable|shell_executable|become_exe|become_flags|\w+_interpreter)$"
+)
+_SAFE_INTERPRETER_RE = re.compile(r"^(auto|auto_silent|auto_legacy|auto_legacy_silent|/[\w./+-]+)$")
+_CFG_ALLOWED = {
+    "defaults": {
+        "inventory", "roles_path", "host_key_checking", "interpreter_python", "stdout_callback",
+        "callback_result_format", "forks", "timeout", "gathering", "retry_files_enabled",
+        "display_skipped_hosts", "deprecation_warnings", "any_errors_fatal", "force_handlers",
+    },
+    "ssh_connection": {"pipelining", "retries", "transfer_method"},
+    "privilege_escalation": {"become", "become_method", "become_user"},
+}
+
+
+def _repo_files(root: Path):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        for d in dirnames:
+            yield Path(dirpath) / d, True
+        for f in sorted(filenames):
+            yield Path(dirpath) / f, False
+
+
+def _is_vault_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(14) == b"$ANSIBLE_VAULT"
+    except OSError:
+        return False
+
+
+def _data_violations(node, path_keys_ok=True):
+    """Clés et valeurs interdites dans un YAML du repo de config."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            key = str(key)
+            if key in _CONTROLLER_KEYS:
+                yield f"{key} : interdit (exécution sur le contrôleur)"
+            if key == "hosts" and any(h in str(value) for h in ("localhost", "127.0.0.1")):
+                yield "hosts: localhost : interdit (exécution sur le contrôleur)"
+            if _CONNECTION_VAR_RE.match(key):
+                if not (key.endswith("_interpreter") and _SAFE_INTERPRETER_RE.match(str(value))):
+                    yield f"{key} : interdit (agit sur la connexion, permet d'exécuter des commandes)"
+            if key in _PATH_KEYS:
+                for v in value if isinstance(value, list) else [value]:
+                    if isinstance(v, str) and (v.startswith(("/", "~")) or ".." in v):
+                        yield f"{key}: {v} : chemin hors du repo interdit"
+            yield from _data_violations(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _data_violations(item)
+
+
+def _vault_refs(node, top=True):
+    """Références à vault_* ailleurs que dans swarm_secrets."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if top and key == "swarm_secrets":
+                continue
+            yield from _vault_refs(value, top=False)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _vault_refs(item, top=False)
+    elif isinstance(node, str) and "vault_" in node:
+        yield node
+
+
+def data_only_violations(config_dir: Path) -> list[str]:
+    found = []
+    for path, is_dir in _repo_files(config_dir):
+        rel = path.relative_to(config_dir)
+        if is_dir:
+            if path.name in _PLUGIN_DIRS or path.name.endswith("_plugins"):
+                found.append(f"{rel}/ : dossier de plugins ou de modules interdit")
+            continue
+        if path.suffix == ".py":
+            found.append(f"{rel} : fichier Python interdit (exécuté sur le contrôleur)")
+        if os.access(path, os.X_OK):
+            found.append(f"{rel} : fichier exécutable interdit (inventaire script, outil…)")
+        if path.suffix not in (".yml", ".yaml"):
+            continue
+        if _is_vault_file(path):
+            if path.name != "vault.yml":
+                found.append(f"{rel} : fichier chiffré à nommer vault.yml (ses variables vault_* sont masquées)")
+            continue
+        text = path.read_text()
+        if re.search(r"!vault\b", text):
+            found.append(f"{rel} : valeur !vault en ligne interdite, utilise un fichier vault.yml")
+        for m in _LOOKUP_RE.finditer(text):
+            if m.group(1).removeprefix("ansible.builtin.") not in _SAFE_LOOKUPS:
+                found.append(f"{rel} : lookup {m.group(1)} interdit (lit ou exécute sur le contrôleur)")
+        for m in _WITH_RE.finditer(text):
+            if m.group(1) not in _SAFE_LOOKUPS:
+                found.append(f"{rel} : with_{m.group(1)} interdit (lookup sur le contrôleur)")
+        data = yaml.load(text, Loader=_Loader)
+        found += [f"{rel} : {v}" for v in _data_violations(data)]
+        if ".github" not in rel.parts:
+            found += [f"{rel} : {v!r} : vault_* n'est utilisable que dans swarm_secrets (sinon il apparaît dans la sortie de plan)"
+                      for v in _vault_refs(data)]
+    cfg_path = config_dir / "ansible.cfg"
+    if cfg_path.exists():
+        cfg = configparser.ConfigParser(interpolation=None)
+        cfg.read(cfg_path)
+        for section in cfg.sections():
+            for key in cfg[section]:
+                if key not in _CFG_ALLOWED.get(section, set()):
+                    found.append(f"ansible.cfg : [{section}] {key} non autorisé")
+    return found
+
+
 # --- Disposition des variables ---------------------------------------------------
 
 
@@ -72,14 +208,39 @@ SENSITIVE = ("/etc", "/root", "/home", "/proc", "/sys", "/boot", "/dev", "/run",
 HARMLESS = {"/etc/localtime", "/etc/timezone"}  # lecture seule, courants pour l'heure
 
 
-def _bind_sources(service):
+def _volume_host_path(definition):
+    """Un volume nommé du driver local avec o=bind (ou type=none) monte un chemin de l'hôte."""
+    opts = (definition or {}).get("driver_opts") or {}
+    if "bind" in str(opts.get("o", "")).split(",") or str(opts.get("type", "")) == "none":
+        return str(opts.get("device", ""))
+    return None
+
+
+def _bind_sources(service, volumes=None):
+    volumes = volumes or {}
     for volume in service.get("volumes", []) or []:
         if isinstance(volume, str):
             parts = volume.split(":")
             if len(parts) >= 2 and parts[0].startswith(("/", ".", "~")):
                 yield parts[0], "ro" in parts[2:3]
+            elif len(parts) >= 2 and (host := _volume_host_path(volumes.get(parts[0]))) is not None:
+                yield host, "ro" in parts[2:3]
         elif isinstance(volume, dict) and volume.get("type") == "bind":
             yield volume.get("source", ""), bool(volume.get("read_only"))
+        elif isinstance(volume, dict) and (host := _volume_host_path(volumes.get(volume.get("source")))) is not None:
+            yield host, bool(volume.get("read_only"))
+
+
+def _strings(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield str(k)
+            yield from _strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _strings(v)
+    elif isinstance(node, str):
+        yield node
 
 
 def _image_problem(image):
@@ -100,6 +261,13 @@ def compose_violations(compose: dict) -> list[str]:
     services = compose.get("services") or {}
     if not services:
         found.append("aucun service")
+    # docker stack deploy remplace $VAR / ${VAR} par l'environnement root du manager :
+    # « ${HOME}:/data » monte /root. Seul $$ (un $ littéral) est accepté.
+    for value in sorted({v for v in _strings(compose) if re.search(r"(?<!\$)\$(?!\$)", v.replace("$$", ""))}):
+        found.append(f"interpolation interdite : {value!r} (évaluée avec l'environnement root du manager)")
+    for net, definition in (compose.get("networks") or {}).items():
+        if (definition or {}).get("external"):
+            found.append(f"réseau {net} : external interdit (les réseaux d'une stack sont créés par elle, et chiffrés)")
     for name, svc in services.items():
         allowed = svc.get("x-allow") or {}
         if not isinstance(allowed, dict) or not all(isinstance(r, str) and r.strip() for r in allowed.values()):
@@ -122,7 +290,7 @@ def compose_violations(compose: dict) -> list[str]:
         check("cap-add", bool(svc.get("cap_add")), "cap_add")
         check("devices", bool(svc.get("devices")), "devices")
         check("security-opt", any("unconfined" in str(o) for o in svc.get("security_opt") or []), "security_opt unconfined")
-        for source, read_only in _bind_sources(svc):
+        for source, read_only in _bind_sources(svc, compose.get("volumes") or {}):
             path = source.rstrip("/") or "/"
             if not path.startswith("/"):
                 found.append(f"{name} : montage relatif {source} (le compose est déployé hors du repo : volume nommé ou chemin absolu)")
@@ -176,6 +344,7 @@ def run(ansible_dir: Path) -> list[str]:
     for root in (ansible_dir, COLLECTION_DIR):
         for path in sorted(root.rglob("*.yml")):
             problems += [f"{path} : {v}" for v in real_execution_violations(path)]
+    problems += [f"{ansible_dir} : {v}" for v in data_only_violations(ansible_dir)]
     problems += vars_layout_violations(ansible_dir)
     for path in sorted((ansible_dir / "stacks").glob("*/compose.yml")):
         problems += [f"{path} : {v}" for v in compose_violations(yaml.safe_load(path.read_text()))]

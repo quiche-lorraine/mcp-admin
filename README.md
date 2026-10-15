@@ -36,13 +36,33 @@ pas `apply` dans la liste des outils.
   requête : une révocation est immédiate, sans redémarrage.
 - Chaque appel (refus compris) est journalisé dans `audit.jsonl` avec le token
   utilisé, les arguments et la durée.
-- Un seul `apply` à la fois.
+- Un seul `apply` à la fois, et au plus `INFRA_MCP_MAX_PLANS` (2) `plan`
+  simultanés : un token read ne peut pas saturer le contrôleur ni le parc.
 - Les entrées sont validées : `limit` n'accepte que des noms d'hôtes ou de
   groupes, `playbook` que des fichiers de `playbooks/` du repo de config.
 
 Le point sensible : le contrôleur détient une clé SSH avec sudo sur tout le
-parc. Toute la sécurité repose sur les outils exposés ci-dessus et sur le fait
-que les playbooks ne changent que par commit dans le repo.
+parc, et le mot de passe vault. Toute la sécurité repose sur les outils exposés
+ci-dessus et sur le fait que les playbooks ne changent que par commit dans le
+repo de config.
+
+**Le repo de config vaut root sur le parc.** `plan` exécute ses playbooks sur
+le contrôleur : un contenu malveillant mergé pourrait y lire la clé SSH ou le
+mot de passe vault et les afficher dans la sortie, accessible avec un simple
+token read. `infra-mcp lint` ferme les voies connues (un repo de config
+n'apporte que des données) :
+- ni code : pas de `.py`, de dossier de plugins ou de modules, de fichier
+  exécutable, d'option `ansible.cfg` hors d'une liste sûre ;
+- rien sur le contrôleur : pas de `delegate_to`, `local_action`, `connection`,
+  `hosts: localhost`, ni de variable de connexion (`ansible_ssh_*_args`,
+  interpréteur autre qu'un chemin…) ;
+- rien lu sur le contrôleur : lookups limités à une liste sûre (`vars`,
+  `template`…), pas de `src` / `vars_files` hors du repo ;
+- secrets : fichiers chiffrés nommés `vault.yml`, pas de `!vault` en ligne,
+  variables `vault_*` utilisées seulement par `swarm_secrets`.
+
+C'est une défense en profondeur : la relecture des PR, une branche principale
+protégée et la surveillance des changements restent la vraie barrière.
 
 ## Workflow
 
@@ -80,8 +100,9 @@ firewall en deny) ne peuvent pas l'être : le rôle échoue si un étage essaie.
 Un repo de config peut ajouter ses propres verrous avec `locked_vars`.
 
 `infra-mcp lint <dossier>` vérifie un repo de config avec les règles de l'outil
-(plan reste une simulation, disposition des variables, politique des stacks) :
-à lancer dans sa CI, avec la même version de l'outil.
+(plan reste une simulation, le repo n'apporte que des données, disposition des
+variables, politique des stacks) : à lancer dans sa CI, avec la même version de
+l'outil.
 
 ## Configuration à étages
 
@@ -136,7 +157,15 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   l'hôte, `cap_add`, `devices`, montage du socket Docker ou de chemins sensibles
   de l'hôte. Une exception se déclare sur le service, avec sa raison :
   `x-allow: {docker-socket: "Portainer pilote Docker"}`. Elle reste visible en
-  revue de PR.
+  revue de PR. Sont aussi refusés : l'interpolation `$VAR` (évaluée avec
+  l'environnement root du manager : `${HOME}:/data` monterait `/root`), les
+  volumes `driver_opts` qui montent un chemin de l'hôte (traités comme un
+  montage direct), et les réseaux `external`.
+- **Réseaux chiffrés** : le socle force `encrypted` sur le réseau par défaut et
+  sur chaque réseau déclaré : le trafic entre nœuds passe en IPsec, ESP étant
+  ouvert entre les nœuds par `swarm-join`. Un réseau existant ne change pas
+  d'option : pour chiffrer une stack déjà déployée, supprime-la puis
+  redéploie-la.
 
 ## Installation sur le contrôleur
 

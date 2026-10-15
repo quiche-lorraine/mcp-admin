@@ -14,3 +14,10 @@ secrets:
     name: "{{ stacks_secret_versions[secret] }}"
 {% endfor %}
 {% endif %}
+{# Trafic entre nœuds chiffré (IPsec) : réseau par défaut et réseaux déclarés. #}
+networks:
+{% for network in (['default'] + stack.networks) | unique %}
+  {{ network }}:
+    driver_opts:
+      encrypted: "true"
+{% endfor %}

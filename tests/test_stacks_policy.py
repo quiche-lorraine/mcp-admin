@@ -76,6 +76,16 @@ def _svc(**kwargs):
         (_svc(**{"x-allow": {"root": "parce que"}}), "exception inconnue"),
         ({**_svc(), "secrets": {"s": {"file": "./s.txt"}}}, "doit être external"),
         ({**_svc(), "configs": {"c": {"file": "./nginx.conf"}}}, "pas encore pris en charge"),
+        # Contournements vérifiés sur un vrai swarm pendant la revue de sécurité
+        (_svc(volumes=["${HOME}:/data"]), "interpolation interdite"),
+        (_svc(environment={"X": "$HOME"}), "interpolation interdite"),
+        ({**_svc(volumes=["etc:/host-etc"]),
+          "volumes": {"etc": {"driver": "local", "driver_opts": {"type": "none", "o": "bind", "device": "/etc"}}}},
+         "chemin sensible de l'hôte /etc"),
+        ({**_svc(volumes=[{"type": "volume", "source": "s", "target": "/s"}]),
+          "volumes": {"s": {"driver_opts": {"o": "bind", "device": "/var/run/docker.sock"}}}},
+         "socket Docker"),
+        ({**_svc(networks=["proxy"]), "networks": {"proxy": {"external": True}}}, "external interdit"),
     ],
 )
 def test_violations_detectees(compose, expected):
@@ -93,6 +103,10 @@ def test_violations_detectees(compose, expected):
         _svc(volumes=["/var/run/docker.sock:/var/run/docker.sock:ro"], **{"x-allow": {"docker-socket": "portainer"}}),
         _svc(deploy={"labels": {"a": "b"}}),
         {**_svc(), "secrets": {"s": {"external": True}}},
+        _svc(command=["sh", "-c", "echo $$HOME"]),  # $$ : un $ littéral, pas d'interpolation
+        {**_svc(volumes=["data:/data"]),  # volume NFS : driver_opts sans montage de l'hôte
+         "volumes": {"data": {"driver_opts": {"type": "nfs", "o": "addr=10.0.0.5,rw", "device": ":/export"}}}},
+        {**_svc(networks=["back"]), "networks": {"back": {"driver": "overlay"}}},
     ],
 )
 def test_configurations_acceptees(compose):
