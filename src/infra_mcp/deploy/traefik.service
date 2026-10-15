@@ -1,0 +1,46 @@
+[Unit]
+Description=Traefik - reverse proxy HTTPS d'infra-mcp
+Documentation=https://github.com/quiche-lorraine/mcp-admin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Installé et mis à jour par infra-mcp-admin (version et empreinte figées dans le script).
+ExecStart=/usr/local/bin/traefik --configFile=/etc/traefik/traefik.yml
+Restart=on-failure
+
+# Compte éphémère sans droits, sauf écouter sur le port 443. Seul dossier
+# accessible en écriture : /var/lib/traefik (certificats).
+DynamicUser=true
+StateDirectory=traefik
+StateDirectoryMode=0700
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+# Appel refusé plutôt que service tué : le runtime Go tente des appels optionnels.
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

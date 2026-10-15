@@ -177,7 +177,8 @@ commande peut être relancée, elle ne refait que ce qui manque.
 # (le commit de son requirements.txt). Lis-le avant de l'exécuter.
 curl -fsSLo infra-mcp-admin \
   https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/<commit>/src/infra_mcp/deploy/infra-mcp-admin
-sudo bash infra-mcp-admin install --repo git@github.com:quiche-lorraine/infra.git
+sudo bash infra-mcp-admin install --repo git@github.com:quiche-lorraine/infra.git \
+  --domain mcp.exemple.fr
 ```
 
 `install` :
@@ -194,16 +195,40 @@ sudo bash infra-mcp-admin install --repo git@github.com:quiche-lorraine/infra.gi
 6. récupère les clés d'hôte du parc et **demande de confirmer chaque
    empreinte** (à comparer avec `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
    depuis la console de l'hébergeur) ;
-7. démarre les services, puis vérifie : `infra-mcp lint`,
-   `systemd-analyze security`, et que le serveur répond 401 sans token.
+7. met le serveur derrière un reverse proxy HTTPS (voir ci-dessous) ;
+8. démarre les services, puis vérifie : `infra-mcp lint`,
+   `systemd-analyze security`, que le serveur répond 401 sans token, et la
+   même chose en HTTPS à travers le proxy, certificat compris.
 
 Il termine par ce qui reste à faire : mettre la clé publique du contrôleur dans
-`admin_users_global`, créer un token, exposer le service.
+`admin_users_global`, créer un token, brancher Claude Code.
+
+**Reverse proxy.** Le serveur n'écoute qu'en HTTP local ; `install` cherche un
+Traefik déjà en place :
+- **dans un conteneur Docker** (par exemple celui de Coolify) : il lit sa
+  configuration (options, variables ou fichier monté) pour trouver son point
+  d'entrée sur le port 443, son résolveur de certificats et son dossier de
+  routes. Il propose alors d'y ajouter la route du serveur MCP, de faire écouter
+  infra-mcp sur la passerelle du réseau Docker de Traefik (joignable par les
+  conteneurs, pas par Internet) et, si ufw est actif, de laisser passer ce
+  réseau ;
+- **sur la machine** : même chose, infra-mcp restant en local ;
+- **aucun** : si le port 443 est libre, il propose d'installer Traefik
+  (binaire de version et d'empreinte figées dans le script, unité systemd
+  durcie sous un compte éphémère, `/etc/traefik`). Le certificat Let's
+  Encrypt est obtenu sur le port 443 : le port 80 reste fermé. Il faut que le
+  domaine pointe vers le contrôleur ; si ufw est actif, le script propose
+  d'ouvrir le 443 (à déclarer aussi dans `firewall_allow_host` si le
+  contrôleur est dans l'inventaire).
+
+Quand il ne peut pas écrire la route lui-même, il la prépare dans
+`/etc/infra-mcp/traefik-infra-mcp.yml`, à ajouter à la configuration
+dynamique de Traefik. Le domaine est retenu dans `/etc/infra-mcp/proxy.conf`.
+`update` met à jour le Traefik qu'il a installé, et seulement celui-là.
 
 Les réglages propres au contrôleur vont dans `/etc/infra-mcp/infra-mcp.env`
-(créé par `install`, jamais écrasé), par exemple l'adresse d'écoute pour un
-reverse proxy en conteneur. `deploy/traefik-infra-mcp.yml` est une
-configuration dynamique Traefik prête à adapter.
+(créé par `install`, jamais écrasé ; seule l'adresse d'écoute peut y être
+changée par `install`, après accord).
 
 **Mise à jour**, après une PR qui change `requirements.txt` dans le repo de
 config :
@@ -253,7 +278,7 @@ Le token n'est affiché qu'une fois.
 ## Brancher Claude Code
 
 ```bash
-claude mcp add --transport http infra https://mcp.example.fr/mcp \
+claude mcp add --transport http infra https://mcp.exemple.fr/mcp \
   --header "Authorization: Bearer imcp_..."
 ```
 
