@@ -9,25 +9,25 @@
 
 - name: Additionne les couches (global + groupes + hôte)
   ansible.builtin.set_fact:
-    _packages_present: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_present_')) | flatten | unique }}"
-    _packages_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_absent_')) | flatten | unique }}"
-    _firewall_allow: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_allow_')) | flatten | unique }}"
-    _admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
+    base_packages_present: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_present_')) | flatten | unique }}"
+    base_packages_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_absent_')) | flatten | unique }}"
+    base_firewall_allow: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_allow_')) | flatten | unique }}"
+    base_admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
 
 # --- Paquets -----------------------------------------------------------------
 
 - name: Paquets présents
   ansible.builtin.apt:
-    name: "{{ _packages_present }}"
+    name: "{{ base_packages_present }}"
     state: present
     update_cache: true
     cache_valid_time: 3600
 
 - name: Paquets absents
   ansible.builtin.apt:
-    name: "{{ _packages_absent }}"
+    name: "{{ base_packages_absent }}"
     state: absent
-  when: _packages_absent | length > 0
+  when: base_packages_absent | length > 0
 
 # --- Mises à jour de sécurité automatiques -------------------------------------
 
@@ -49,7 +49,7 @@
     name: "{{ item.name }}"
     shell: /bin/bash
     create_home: true
-  loop: "{{ _admin_users }}"
+  loop: "{{ base_admin_users }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -58,7 +58,7 @@
     user: "{{ item.name }}"
     key: "{{ item.ssh_keys | join('\n') }}"
     exclusive: true
-  loop: "{{ _admin_users }}"
+  loop: "{{ base_admin_users }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -68,7 +68,7 @@
     mode: "0440"
     content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
     validate: "visudo -cf %s"
-  loop: "{{ _admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+  loop: "{{ base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -76,7 +76,7 @@
 # Ordre important : les règles d'autorisation (SSH compris) AVANT d'activer ufw,
 # sinon on se coupe l'accès.
 
-- name: ufw installé
+- name: Paquet ufw installé
   ansible.builtin.apt:
     name: ufw
     state: present
@@ -87,7 +87,7 @@
     port: "{{ item.port }}"
     proto: "{{ item.proto }}"
     src: "{{ item.src | default(omit) }}"
-  loop: "{{ _firewall_allow }}"
+  loop: "{{ base_firewall_allow }}"
   loop_control:
     label: "{{ item.port }}/{{ item.proto }}"
 
