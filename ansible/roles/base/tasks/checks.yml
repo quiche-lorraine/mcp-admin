@@ -20,6 +20,27 @@
     base_admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
     base_users_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^users_absent_')) | flatten | unique }}"
 
+# --- Format des entrées -------------------------------------------------------
+# Une entrée mal formée ne doit pas passer en silence : un retrait qui ne fait
+# rien laisse le compte ou le port en place alors que plan paraît propre.
+
+- name: Comptes à supprimer donnés par leur nom
+  ansible.builtin.assert:
+    that: item is string and item is match('^[a-z_][a-z0-9_-]*$')
+    fail_msg: "users_absent_* attend des noms de compte (ex. ancien-admin), pas {{ item }}"
+    quiet: true
+  loop: "{{ base_users_absent }}"
+
+- name: Règles firewall avec port et proto
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.port is defined
+      - item.proto is defined
+    fail_msg: "règle firewall invalide : {{ item }} (attendu : { port: \"8080\", proto: tcp })"
+    quiet: true
+  loop: "{{ base_firewall_allow + base_firewall_remove }}"
+
 # --- Retraits : ne jamais se couper l'accès -----------------------------------
 
 - name: Aucun compte n'est à la fois admin et à supprimer
@@ -38,13 +59,27 @@
   vars:
     _protected: "{{ ['root', ansible_user | default('root')] }}"
 
+- name: Le compte d'Ansible garde son sudo
+  ansible.builtin.assert:
+    that: >-
+      (ansible_user | default('root')) == 'root'
+      or ansible_user in (base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | map(attribute='name'))
+    fail_msg: >-
+      {{ ansible_user }} est le compte qu'utilise Ansible : il doit rester dans
+      admin_users_* avec sudo: true, sinon le prochain apply n'aurait plus les droits root.
+    quiet: true
+
+# 22 est toujours protégé en plus de ansible_port : le port réel peut venir du
+# ~/.ssh/config du contrôleur, que l'inventaire ne voit pas.
 - name: Le port SSH n'est jamais retiré
   ansible.builtin.assert:
-    that: (ansible_port | default(22) | string) not in (base_firewall_remove | map(attribute='port') | map('string'))
+    that: _ssh_ports | intersect(base_firewall_remove | map(attribute='port') | map('string')) | length == 0
     fail_msg: >-
-      firewall_remove_* ne peut pas toucher au port SSH ({{ ansible_port | default(22) }}) :
+      firewall_remove_* ne peut pas toucher au port SSH ({{ _ssh_ports | join(', ') }}) :
       une erreur couperait l'accès au serveur. Restreindre SSH se fait à la main.
     quiet: true
+  vars:
+    _ssh_ports: "{{ ['22', ansible_port | default(22) | string] | unique }}"
 
 # Clé de comparaison port/proto/source : « 22 » et 22 désignent la même règle.
 - name: Clés des règles ouvertes

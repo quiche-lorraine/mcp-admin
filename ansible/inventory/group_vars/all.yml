@@ -45,5 +45,6 @@ users_absent_global: []
 
 updates_auto_reboot: true
 # Heure de redémarrage si une mise à jour l'exige. Décalée pour les workers du
-# swarm (group_vars/swarm_workers.yml) afin que tout le parc ne tombe pas ensemble.
+# swarm (group_vars/swarm_workers.yml) et pour srv-01 (host_vars) afin que tout
+# le parc ne tombe pas ensemble.
 updates_reboot_time: "04:00"

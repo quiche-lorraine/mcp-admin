@@ -17,11 +17,12 @@ Environment=INFRA_MCP_AUDIT_LOG=/var/log/infra-mcp/audit.jsonl
 ExecStart=/opt/infra-mcp/venv/bin/infra-mcp serve
 Restart=on-failure
 
-# Durcissement : le service n'écrit que dans ses propres dossiers.
+# Durcissement : le service n'écrit que dans ses propres dossiers. Le repo
+# Ansible (/opt/infra) reste en lecture seule : seul infra-mcp-sync le met à jour.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/infra-mcp /var/log/infra-mcp /opt/infra
+ReadWritePaths=/var/lib/infra-mcp /var/log/infra-mcp
 
 [Install]
 WantedBy=multi-user.target

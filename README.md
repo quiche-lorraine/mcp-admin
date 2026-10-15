@@ -54,9 +54,13 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 - **Retraits** : enlever un élément d'une liste ne défait rien sur les serveurs.
   Pour fermer un port, liste la règle dans `firewall_remove_*` (avec la même
   `src` que la règle d'origine) ; pour supprimer un compte, liste-le dans
-  `users_absent_*` (son sudo est retiré, son dossier personnel conservé). Le
-  rôle `base` refuse, avant de toucher quoi que ce soit, un élément à la fois
-  ajouté et retiré, le retrait du port SSH, de `root` ou de `ansible_user`.
+  `users_absent_*` (son sudo est retiré, son dossier personnel conservé mais
+  réservé à root). Le rôle `base` refuse, avant de toucher quoi que ce soit,
+  une entrée mal formée, un élément à la fois ajouté et retiré, le retrait du
+  port SSH (22 et `ansible_port`), de `root` ou de `ansible_user`.
+- **Sudo** : géré en exclusif. Passer un admin à `sudo: false`, ou le retirer
+  de `admin_users_*`, supprime son fichier sudo. Seuls les fichiers créés par
+  le rôle (marqués `# ansible-managed: role base`) sont concernés.
 - **Valeurs verrouillées** : `policy/locked.yml`, chargé par les playbooks avec
   une priorité supérieure à l'inventaire. Si un étage tente de les modifier, le
   rôle `base` échoue avant de toucher quoi que ce soit.
@@ -144,9 +148,9 @@ qu'elle passe.
   du rôle `base` protège les services de l'hôte, pas les conteneurs.
 - **Serveur Coolify** : `docker_engine_managed: false` dans son `host_vars`,
   Coolify gère Docker lui-même.
-- **Redémarrages** : les workers du swarm redémarrent à 04:30, après les
-  managers (04:00). Avec plusieurs workers, décale-les aussi entre eux dans
-  leur `host_vars`.
+- **Redémarrages** : managers à 04:00, workers du swarm à 04:30, srv-01
+  (Coolify, contrôleur) à 05:00. Avec plusieurs workers, décale-les aussi
+  entre eux dans leur `host_vars`.
 - **Comptes retirés** : la suppression échoue si le compte a encore des
   processus (session ouverte, cron). Termine-les, puis relance `apply`.
 - **Swarm** : seul le join des workers est automatisé. La promotion d'un manager

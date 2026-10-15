@@ -95,12 +95,27 @@ def test_restreindre_une_source(tmp_path):
             {"ansible_user": "deploy", "admin_users_global": [], "users_absent_host": ["deploy"]},
             "ne peut pas contenir deploy",
         ),
+        ({"ansible_user": "root", "admin_users_global": [], "users_absent_host": ["root"]}, "ne peut pas contenir root"),
         ({"firewall_remove_host": [{"port": "22", "proto": "tcp", "src": "0.0.0.0/0"}]}, "port SSH"),
         ({"firewall_remove_host": [{"port": 22, "proto": "tcp"}]}, "port SSH"),
         ({"ansible_port": 2222, "firewall_remove_host": [{"port": "2222", "proto": "tcp"}]}, "port SSH"),
         ({"firewall_remove_host": [{"port": "443", "proto": "tcp"}]}, "443/tcp est dans firewall_allow_*"),
         ({"firewall_remove_host": [{"port": 443, "proto": "tcp"}]}, "443/tcp est dans firewall_allow_*"),
         ({"firewall_default_incoming": "allow"}, "verrouillée"),
+        # Port 22 protégé même quand ansible_port dit autre chose
+        ({"ansible_port": 2222, "firewall_remove_host": [{"port": "22", "proto": "tcp"}]}, "port SSH"),
+        # Entrées mal formées : elles ne doivent pas passer en silence
+        ({"users_absent_host": [{"name": "ancien"}]}, "attend des noms de compte"),
+        ({"users_absent_host": ["../../etc/passwd"]}, "attend des noms de compte"),
+        ({"firewall_remove_host": ["8080/tcp"]}, "règle firewall invalide"),
+        ({"firewall_remove_host": [{"port": "8080"}]}, "règle firewall invalide"),
+        ({"firewall_allow_host": [{"proto": "tcp"}]}, "règle firewall invalide"),
+        # Le compte d'Ansible ne perd pas son sudo
+        (
+            {"admin_users_global": [{"name": "renaud", "sudo": False, "ssh_keys": ["k"]}]},
+            "le compte qu'utilise Ansible",
+        ),
+        ({"admin_users_global": []}, "le compte qu'utilise Ansible"),
     ],
 )
 def test_configurations_refusees(tmp_path, layers, message):

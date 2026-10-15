@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 
 from fastmcp.exceptions import ToolError
 
@@ -71,11 +72,17 @@ async def run(*args: str, timeout: int | None = None) -> dict:
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        # Groupe de processus dédié : en cas de délai dépassé, on tue aussi les
+        # workers et les connexions ssh qu'ansible-playbook a lancés.
+        start_new_session=True,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout or config.PLAYBOOK_TIMEOUT)
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         await proc.wait()  # sinon le processus reste zombie
         raise ToolError("délai dépassé, exécution interrompue")
     return {"returncode": proc.returncode, "output": out.decode(errors="replace")}
