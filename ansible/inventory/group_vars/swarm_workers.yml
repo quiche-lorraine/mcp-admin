@@ -1,0 +1,6 @@
+# Les workers redémarrent après les managers : unattended-upgrades installe les
+# mises à jour à peu près au même moment partout, et sans décalage tout le
+# swarm redémarrerait d'un coup. Avec plusieurs workers, décale-les aussi entre
+# eux dans leur host_vars (04:30, 05:00…) pour que les services répliqués
+# restent disponibles.
+updates_reboot_time: "04:30"

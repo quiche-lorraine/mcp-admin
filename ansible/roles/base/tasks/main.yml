@@ -1,18 +1,5 @@
-- name: Vérifie les valeurs verrouillées (policy/locked.yml)
-  ansible.builtin.assert:
-    that: lookup('ansible.builtin.vars', item.key) == item.value
-    fail_msg: "{{ item.key }} est verrouillée à « {{ item.value }} » : surcharge interdite"
-    quiet: true
-  loop: "{{ locked_vars | default({}) | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-
-- name: Additionne les couches (global + groupes + hôte)
-  ansible.builtin.set_fact:
-    base_packages_present: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_present_')) | flatten | unique }}"
-    base_packages_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_absent_')) | flatten | unique }}"
-    base_firewall_allow: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_allow_')) | flatten | unique }}"
-    base_admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
+- name: Fusion des couches et garde-fous
+  ansible.builtin.import_tasks: checks.yml
 
 # --- Paquets -----------------------------------------------------------------
 
@@ -72,6 +59,22 @@
   loop_control:
     label: "{{ item.name }}"
 
+# Retirer un compte de admin_users_* ne le supprime pas : il faut le lister dans
+# users_absent_*. Le dossier personnel est conservé. La suppression échoue si le
+# compte a encore des processus en cours (session ouverte, cron…).
+- name: Sudo des comptes retirés
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/90-{{ item }}"
+    state: absent
+  loop: "{{ base_users_absent }}"
+
+- name: Comptes retirés
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: false
+  loop: "{{ base_users_absent }}"
+
 # --- Firewall -----------------------------------------------------------------
 # Ordre important : les règles d'autorisation (SSH compris) AVANT d'activer ufw,
 # sinon on se coupe l'accès.
@@ -88,6 +91,19 @@
     proto: "{{ item.proto }}"
     src: "{{ item.src | default(omit) }}"
   loop: "{{ base_firewall_allow }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"
+
+# Retirer une entrée de firewall_allow_* ne ferme pas le port : il faut la
+# lister dans firewall_remove_*, avec la même source (src) que la règle d'origine.
+- name: Règles retirées
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    src: "{{ item.src | default(omit) }}"
+    delete: true
+  loop: "{{ base_firewall_remove }}"
   loop_control:
     label: "{{ item.port }}/{{ item.proto }}"
 
