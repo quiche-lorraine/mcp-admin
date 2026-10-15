@@ -1,5 +1,5 @@
-# Configuration dynamique Traefik, à ajouter dans le proxy de Coolify
-# (Serveur → Proxy → Dynamic Configurations). Adapte le domaine, ainsi que le
+# Configuration dynamique Traefik, à ajouter dans ton proxy (ex. avec Coolify :
+# Serveur → Proxy → Dynamic Configurations). Adapte le domaine, ainsi que le
 # certResolver et l'entrypoint s'ils portent d'autres noms chez toi.
 http:
   routers:

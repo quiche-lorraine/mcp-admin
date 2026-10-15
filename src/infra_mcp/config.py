@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-ANSIBLE_DIR = Path(os.environ.get("INFRA_MCP_ANSIBLE_DIR", "/opt/infra/ansible")).resolve()
+ANSIBLE_DIR = Path(os.environ.get("INFRA_MCP_ANSIBLE_DIR", "/opt/infra")).resolve()
 TOKENS_FILE = Path(os.environ.get("INFRA_MCP_TOKENS", "/etc/infra-mcp/tokens.json"))
 AUDIT_LOG = Path(os.environ.get("INFRA_MCP_AUDIT_LOG", "/var/log/infra-mcp/audit.jsonl"))
 

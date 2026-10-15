@@ -9,9 +9,11 @@ Le projet livre deux choses, versionnées ensemble :
 - **le socle Ansible** (collection `infra_mcp.core`, `src/ansible_collections/`) :
   ce que tout serveur reçoit, avec ses garde-fous.
 
-`ansible/` est un repo de config : inventaire, variables, stacks, vault, et des
-playbooks d'une ligne qui importent ceux du socle. Il a vocation à vivre dans
-son propre repo.
+La configuration du parc (inventaire, variables, stacks, vault, et des
+playbooks d'une ligne qui importent ceux du socle) vit dans un repo de config
+séparé, ici [quiche-lorraine/infra](https://github.com/quiche-lorraine/infra),
+qui fige la version de l'outil qu'il utilise. `examples/infra/` en est un
+modèle générique, aussi utilisé par les tests.
 
 ## Modèle de sécurité
 
@@ -36,7 +38,7 @@ pas `apply` dans la liste des outils.
   utilisé, les arguments et la durée.
 - Un seul `apply` à la fois.
 - Les entrées sont validées : `limit` n'accepte que des noms d'hôtes ou de
-  groupes, `playbook` que des fichiers de `ansible/playbooks/`.
+  groupes, `playbook` que des fichiers de `playbooks/` du repo de config.
 
 Le point sensible : le contrôleur détient une clé SSH avec sudo sur tout le
 parc. Toute la sécurité repose sur les outils exposés ci-dessus et sur le fait
@@ -44,7 +46,8 @@ que les playbooks ne changent que par commit dans le repo.
 
 ## Workflow
 
-1. Claude (ou toi) modifie `group_vars` / `host_vars` et ouvre une PR.
+1. Claude (ou toi) modifie `group_vars` / `host_vars` et ouvre une PR sur le
+   repo de config, dont la CI lance `infra-mcp lint`.
 2. Après le merge, le timer `infra-mcp-sync` fait un `git pull` sur le contrôleur.
 3. `plan site` montre l'effet ; `apply site` l'applique. Pareil pour les
    stacks Swarm avec `plan stacks` / `apply stacks`.
@@ -111,7 +114,7 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 `playbooks/stacks.yml` déploie des stacks depuis le premier manager du swarm
 (après `site` et `swarm-join`).
 
-- **Une stack** = `ansible/stacks/<nom>/compose.yml`, déclarée dans
+- **Une stack** = `stacks/<nom>/compose.yml` dans le repo de config, déclarée dans
   `swarm_stacks` (`group_vars/swarm_managers/stacks.yml`). La retirer de la
   liste ne la supprime pas : liste-la dans `swarm_stacks_absent`.
 - **Secrets** : chiffrés avec ansible-vault dans
@@ -122,8 +125,8 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   version (`nom_v2`…) et redéploie les stacks concernées.
 
   ```bash
-  ansible-vault create ansible/inventory/group_vars/swarm_managers/vault.yml
-  ansible-vault edit   ansible/inventory/group_vars/swarm_managers/vault.yml
+  ansible-vault create inventory/group_vars/swarm_managers/vault.yml
+  ansible-vault edit   inventory/group_vars/swarm_managers/vault.yml
   ```
 - **plan** : `docker_stack` ne sait pas simuler. Chaque service porte l'empreinte
   de son compose (label `infra.stack-hash`) ; `plan stacks` la compare à celle
@@ -156,10 +159,11 @@ sudo install -m 644 -o infra-mcp -g infra-mcp /tmp/known_hosts /var/lib/infra-mc
 # Code et repo
 sudo mkdir -p /opt/infra-mcp /opt/infra /etc/infra-mcp /var/log/infra-mcp
 sudo chown infra-mcp: /opt/infra /etc/infra-mcp /var/log/infra-mcp
-sudo -u infra-mcp git clone git@github.com:renaud/infra.git /opt/infra
+# Repo de config (clé de déploiement en lecture seule s'il est privé)
+sudo -u infra-mcp git clone git@github.com:quiche-lorraine/infra.git /opt/infra
 sudo python3 -m venv /opt/infra-mcp/venv
-sudo /opt/infra-mcp/venv/bin/pip install /chemin/vers/infra-mcp
-# (installe aussi le socle infra_mcp.core et le paquet ansible complet)
+# L'outil à la version figée par le repo de config (socle et ansible compris)
+sudo /opt/infra-mcp/venv/bin/pip install -r /opt/infra/requirements.txt
 
 # Mot de passe ansible-vault (le même que sur ton poste, à garder dans ton
 # gestionnaire de mots de passe). Saisi sans écho ni historique, lisible par
@@ -173,8 +177,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now infra-mcp infra-mcp-sync.timer
 ```
 
-Puis ajoute `deploy/traefik-infra-mcp.yml` dans les configurations dynamiques
-du proxy Coolify.
+Puis expose le service en HTTPS derrière ton reverse proxy :
+`deploy/traefik-infra-mcp.yml` est une configuration dynamique Traefik prête à
+adapter.
 
 ## Tokens
 
@@ -227,11 +232,11 @@ qu'elle passe.
   quelque chose pour de vrai par `plan`, qui n'exige qu'un token `read`.
 - **Docker et ufw** : les ports publiés par Docker contournent ufw. Le firewall
   du rôle `base` protège les services de l'hôte, pas les conteneurs.
-- **Serveur Coolify** : `docker_engine_managed: false` dans son `host_vars`,
-  Coolify gère Docker lui-même.
-- **Redémarrages** : managers à 04:00, workers du swarm à 04:30, srv-01
-  (Coolify, contrôleur) à 05:00. Avec plusieurs workers, décale-les aussi
-  entre eux dans leur `host_vars`.
+- **Docker géré ailleurs** : `docker_engine_managed: false` dans le
+  `host_vars` d'une machine où un autre outil gère Docker.
+- **Redémarrages** : décale `updates_reboot_time` entre les machines (dans
+  l'exemple : managers à 04:00, workers à 04:30, contrôleur à 05:00), pour que
+  le parc ne tombe pas d'un coup.
 - **Comptes retirés** : la suppression échoue si le compte a encore des
   processus (session ouverte, cron). Termine-les, puis relance `apply`.
 - **Stacks** : `plan` voit les changements par service, pas les services
