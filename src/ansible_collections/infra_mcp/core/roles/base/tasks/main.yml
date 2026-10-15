@@ -1,0 +1,30 @@
+# Socle appliqué à tous les serveurs. Les garde-fous passent en premier : rien
+# n'est modifié si la configuration est dangereuse.
+
+- name: Fusion des couches et garde-fous
+  ansible.builtin.import_tasks: checks.yml
+
+- name: Paquets
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Mises à jour automatiques
+  ansible.builtin.import_tasks: updates.yml
+
+- name: Heure
+  ansible.builtin.import_tasks: time.yml
+
+- name: Journaux
+  ansible.builtin.import_tasks: journald.yml
+
+- name: Comptes admin
+  ansible.builtin.import_tasks: users.yml
+
+- name: SSH
+  ansible.builtin.import_tasks: ssh.yml
+
+- name: Firewall
+  ansible.builtin.import_tasks: firewall.yml
+
+# En dernier : une suppression qui échoue (processus actifs) n'empêche pas le reste.
+- name: Comptes retirés
+  ansible.builtin.import_tasks: users_absent.yml

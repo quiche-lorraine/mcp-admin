@@ -1,0 +1,14 @@
+# --- Paquets -----------------------------------------------------------------
+
+- name: Paquets présents
+  ansible.builtin.apt:
+    name: "{{ base_packages_present }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Paquets absents
+  ansible.builtin.apt:
+    name: "{{ base_packages_absent }}"
+    state: absent
+  when: base_packages_absent | length > 0

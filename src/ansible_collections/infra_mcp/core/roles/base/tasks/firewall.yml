@@ -1,0 +1,37 @@
+# --- Firewall -----------------------------------------------------------------
+# Ordre important : les règles d'autorisation (SSH compris) AVANT d'activer ufw,
+# sinon on se coupe l'accès.
+
+- name: Paquet ufw installé
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Règles d'autorisation
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    src: "{{ item.src | default(omit) }}"
+  loop: "{{ base_firewall_allow }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"
+
+# Retirer une entrée de firewall_allow_* ne ferme pas le port : il faut la
+# lister dans firewall_remove_*, avec la même source (src) que la règle d'origine.
+- name: Règles retirées
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    src: "{{ item.src | default(omit) }}"
+    delete: true
+  loop: "{{ base_firewall_remove }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"
+
+- name: Politique entrante par défaut et activation
+  community.general.ufw:
+    state: enabled
+    direction: incoming
+    default: "{{ firewall_default_incoming }}"

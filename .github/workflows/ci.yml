@@ -27,18 +27,23 @@ jobs:
 
   ansible:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ansible
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: pip install ansible-core ansible-lint
-      - run: ansible-galaxy collection install -r requirements.yml
-      - run: ansible-playbook --syntax-check playbooks/*.yml
-      - run: ansible-lint
+      # L'outil installe la collection infra_mcp.core, ses dépendances (paquet
+      # ansible complet) et la commande lint, comme sur le contrôleur.
+      - run: pip install -e . ansible-lint
+      - name: Collection infra_mcp.core
+        working-directory: src/ansible_collections/infra_mcp/core
+        run: ansible-lint
+      - name: Repo de config (ansible/)
+        working-directory: ansible
+        run: |
+          infra-mcp lint .
+          ansible-playbook --syntax-check playbooks/*.yml
+          ansible-lint
 
   # Bout en bout sur un vrai swarm à un nœud : plan, apply, rotation de secret,
   # suppression (tests/test_stacks_e2e.py, sauté ailleurs faute de swarm).
@@ -50,6 +55,5 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -e '.[dev]' docker jsondiff
-      - run: ansible-galaxy collection install -r ansible/requirements.yml
       - run: docker swarm init --advertise-addr 127.0.0.1
       - run: pytest -v tests/test_stacks_e2e.py

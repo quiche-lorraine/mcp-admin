@@ -1,5 +1,6 @@
-"""Exécute pour de vrai les garde-fous du rôle base (roles/base/tasks/checks.yml)
-sur localhost, avec des couches de variables construites pour chaque cas."""
+"""Exécute pour de vrai les garde-fous du rôle infra_mcp.core.base (tasks/checks.yml,
+avec les valeurs par défaut et les verrous du rôle) sur localhost, avec des couches
+de variables construites pour chaque cas."""
 
 import json
 import re
@@ -9,10 +10,6 @@ import subprocess
 import pytest
 import yaml
 
-from conftest import ANSIBLE_DIR
-
-CHECKS = ANSIBLE_DIR / "roles" / "base" / "tasks" / "checks.yml"
-LOCKED = ANSIBLE_DIR / "policy" / "locked.yml"
 
 BASE = {
     "ansible_user": "renaud",
@@ -32,10 +29,9 @@ def run_checks(tmp_path, **layers) -> dict:
             "hosts": "localhost",
             "connection": "local",
             "gather_facts": False,
-            "vars_files": [str(LOCKED)],
             "vars": {**BASE, **layers},
             "tasks": [
-                {"ansible.builtin.import_tasks": str(CHECKS)},
+                {"ansible.builtin.import_role": {"name": "infra_mcp.core.base", "tasks_from": "checks.yml"}},
                 {
                     "ansible.builtin.copy": {
                         "dest": str(tmp_path / "out.json"),
@@ -102,6 +98,16 @@ def test_restreindre_une_source(tmp_path):
         ({"firewall_remove_host": [{"port": "443", "proto": "tcp"}]}, "443/tcp est dans firewall_allow_*"),
         ({"firewall_remove_host": [{"port": 443, "proto": "tcp"}]}, "443/tcp est dans firewall_allow_*"),
         ({"firewall_default_incoming": "allow"}, "verrouillée"),
+        # Un repo de config ne peut pas lever un verrou du socle…
+        ({"firewall_default_incoming": "allow", "locked_vars": {"firewall_default_incoming": "allow"}}, "verrouillée"),
+        # … mais peut en ajouter
+        ({"updates_auto_reboot": False, "locked_vars": {"updates_auto_reboot": True}}, "updates_auto_reboot est verrouillée"),
+        # SSH refuse root et les mots de passe : il faut un admin qui prend le relais
+        ({"ansible_user": "root", "admin_users_global": []}, "au moins un compte avec sudo"),
+        (
+            {"ansible_user": "root", "admin_users_global": [{"name": "a", "sudo": True, "ssh_keys": []}]},
+            "au moins un compte avec sudo",
+        ),
         # Port 22 protégé même quand ansible_port dit autre chose
         ({"ansible_port": 2222, "firewall_remove_host": [{"port": "22", "proto": "tcp"}]}, "port SSH"),
         # Entrées mal formées : elles ne doivent pas passer en silence

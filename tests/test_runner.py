@@ -138,3 +138,12 @@ async def test_un_seul_apply_a_la_fois(monkeypatch):
     release.set()
     assert (await runner.playbook("site", "all", check=True))["returncode"] == 0
     assert (await first)["returncode"] == 0
+
+
+def test_executables_du_venv(monkeypatch, tmp_path):
+    # Sous systemd le PATH ne contient pas le venv : on prend ansible-* à côté de
+    # l'interpréteur, là où vivent la collection infra_mcp.core et ses dépendances.
+    (tmp_path / "ansible-playbook").touch()
+    monkeypatch.setattr(runner.sys, "executable", str(tmp_path / "python"))
+    assert runner._bin("ansible-playbook") == str(tmp_path / "ansible-playbook")
+    assert runner._bin("absent") == "absent"

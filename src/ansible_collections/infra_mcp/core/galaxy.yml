@@ -1,0 +1,13 @@
+namespace: infra_mcp
+name: core
+version: 0.2.0
+readme: README.md
+authors: [infra-mcp]
+description: Socle Ansible d'infra-mcp (serveur de base, Docker, Swarm, stacks) et ses garde-fous
+license: [MIT]
+tags: [infrastructure, linux, security]
+repository: https://github.com/quiche-lorraine/mcp-admin
+dependencies:
+  ansible.posix: ">=1.5.0"
+  community.general: ">=8.0.0"
+  community.docker: ">=3.10.0"

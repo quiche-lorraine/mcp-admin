@@ -1,13 +1,4 @@
-# Configuration de base de tout le parc. `plan site` = détection de dérive.
-- name: Configuration de base
-  hosts: all
-  become: true
-  vars_files:
-    - ../policy/locked.yml
-  pre_tasks:
-    - name: Noms des variables vault
-      ansible.builtin.import_tasks: tasks/vault-names.yml
-  roles:
-    - base
-    - role: docker
-      when: docker_engine_managed | default(true)
+# Playbook du socle infra_mcp.core (livré avec infra-mcp). Ajoute tes propres
+# plays après l'import si ce repo a besoin de plus.
+- name: Socle infra_mcp.core.site
+  ansible.builtin.import_playbook: infra_mcp.core.site

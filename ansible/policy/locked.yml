@@ -1,5 +1,0 @@
-# Valeurs verrouillées : aucune couche de l'inventaire ne peut les modifier.
-# Ce fichier est chargé en vars_files par les playbooks, donc hors de portée
-# des group_vars / host_vars. Le rôle base échoue si l'inventaire diverge.
-locked_vars:
-  firewall_default_incoming: deny

@@ -8,95 +8,14 @@ Ces options sont refusées, sauf exception déclarée sur le service avec sa rai
       docker-socket: "Portainer doit piloter Docker"
 """
 
-from pathlib import Path
-
 import pytest
 import yaml
 
 from conftest import ANSIBLE_DIR
+from infra_mcp import lint
+from infra_mcp.lint import compose_violations as violations
 
 STACKS_DIR = ANSIBLE_DIR / "stacks"
-STACKS_VARS = ANSIBLE_DIR / "inventory" / "group_vars" / "swarm_managers" / "stacks.yml"
-
-EXCEPTIONS = {
-    "privileged", "host-network", "host-pid", "host-ipc", "cap-add", "devices",
-    "security-opt", "docker-socket", "host-path",
-}
-DOCKER_SOCKETS = {"/var/run/docker.sock", "/run/docker.sock"}
-SENSITIVE = ("/etc", "/root", "/home", "/proc", "/sys", "/boot", "/dev", "/run", "/var/run", "/var/lib/docker")
-HARMLESS = {"/etc/localtime", "/etc/timezone"}  # lecture seule, courants pour l'heure
-
-
-def _bind_sources(service):
-    for volume in service.get("volumes", []) or []:
-        if isinstance(volume, str):
-            parts = volume.split(":")
-            if len(parts) >= 2 and parts[0].startswith(("/", ".", "~")):
-                yield parts[0], "ro" in parts[2:3]
-        elif isinstance(volume, dict) and volume.get("type") == "bind":
-            yield volume.get("source", ""), bool(volume.get("read_only"))
-
-
-def _image_problem(image):
-    if not image:
-        return "image manquante"
-    if "@sha256:" in image:
-        return None
-    name = image.rsplit("/", 1)[-1]
-    if ":" not in name:
-        return f"image sans tag : {image} (tag explicite obligatoire)"
-    if name.endswith(":latest"):
-        return f"image en latest : {image} (tag explicite obligatoire)"
-    return None
-
-
-def violations(compose: dict) -> list[str]:
-    found = []
-    services = compose.get("services") or {}
-    if not services:
-        found.append("aucun service")
-    for name, svc in services.items():
-        allowed = svc.get("x-allow") or {}
-        if not isinstance(allowed, dict) or not all(isinstance(r, str) and r.strip() for r in allowed.values()):
-            found.append(f"{name} : x-allow doit associer chaque exception à sa raison")
-            allowed = {}
-        for rule in set(allowed) - EXCEPTIONS:
-            found.append(f"{name} : exception inconnue {rule} (connues : {', '.join(sorted(EXCEPTIONS))})")
-
-        def check(rule, condition, message):
-            if condition and rule not in allowed:
-                found.append(f"{name} : {message} (exception : x-allow: {{{rule}: \"raison\"}})")
-
-        if problem := _image_problem(svc.get("image")):
-            found.append(f"{name} : {problem}")
-        networks = svc.get("networks") or []
-        check("privileged", svc.get("privileged") is True, "privileged")
-        check("host-network", svc.get("network_mode") == "host" or "host" in networks, "réseau de l'hôte")
-        check("host-pid", svc.get("pid") == "host", "pid de l'hôte")
-        check("host-ipc", svc.get("ipc") == "host", "ipc de l'hôte")
-        check("cap-add", bool(svc.get("cap_add")), "cap_add")
-        check("devices", bool(svc.get("devices")), "devices")
-        check("security-opt", any("unconfined" in str(o) for o in svc.get("security_opt") or []), "security_opt unconfined")
-        for source, read_only in _bind_sources(svc):
-            path = source.rstrip("/") or "/"
-            if not path.startswith("/"):
-                found.append(f"{name} : montage relatif {source} (le compose est déployé hors du repo : volume nommé ou chemin absolu)")
-            elif path in DOCKER_SOCKETS:
-                check("docker-socket", True, f"montage du socket Docker {source}")
-            elif path in HARMLESS and read_only:
-                continue
-            elif path == "/" or path.startswith(SENSITIVE):
-                check("host-path", True, f"montage d'un chemin sensible de l'hôte {source}")
-        labels = (svc.get("deploy") or {}).get("labels")
-        if labels is not None and not isinstance(labels, dict):
-            found.append(f"{name} : deploy.labels doit être un mapping (le playbook y ajoute infra.stack-hash)")
-    for kind in ("secrets", "configs"):
-        for key, definition in (compose.get(kind) or {}).items():
-            if kind == "secrets" and not (definition or {}).get("external"):
-                found.append(f"secret {key} : doit être external (créé par le playbook depuis le vault)")
-            if kind == "configs" and "file" in (definition or {}):
-                found.append(f"config {key} : file: n'est pas encore pris en charge (le compose est déployé hors du repo)")
-    return found
 
 
 COMPOSE_FILES = sorted(STACKS_DIR.glob("*/compose.yml"))
@@ -109,17 +28,25 @@ def test_stacks_du_repo(path):
 
 
 def test_inventaire_coherent_avec_les_stacks():
-    config = yaml.safe_load(STACKS_VARS.read_text()) or {}
-    declared = set((config.get("swarm_secrets") or {}).keys())
-    for stack in config.get("swarm_stacks") or []:
-        compose_path = STACKS_DIR / stack["name"] / "compose.yml"
-        assert compose_path.is_file(), f"{compose_path} absent"
-        compose = yaml.safe_load(compose_path.read_text())
-        used = set((compose.get("secrets") or {}).keys())
-        listed = set(stack.get("secrets") or [])
-        assert used <= listed, f"{stack['name']} : secrets du compose absents de swarm_stacks : {used - listed}"
-        assert listed <= declared, f"{stack['name']} : secrets absents de swarm_secrets : {listed - declared}"
-    assert not set(s["name"] for s in config.get("swarm_stacks") or []) & set(config.get("swarm_stacks_absent") or [])
+    assert lint.stacks_inventory_violations(ANSIBLE_DIR) == []
+
+
+def test_incoherences_d_inventaire_detectees(tmp_path):
+    vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
+    vars_dir.mkdir(parents=True)
+    (tmp_path / "stacks" / "app").mkdir(parents=True)
+    (tmp_path / "stacks" / "app" / "compose.yml").write_text(yaml.safe_dump(
+        {"services": {"web": {"image": "nginx:1.27.2"}}, "secrets": {"db": {"external": True}}}))
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({
+        "swarm_stacks": [{"name": "app", "secrets": ["api"]}, {"name": "absente"}],
+        "swarm_stacks_absent": ["app"],
+        "swarm_secrets": {},
+    }))
+    problems = "\n".join(lint.stacks_inventory_violations(tmp_path))
+    assert "app : dans swarm_stacks et swarm_stacks_absent" in problems
+    assert "absente" in problems and "absent" in problems
+    assert "secrets du compose absents de swarm_stacks : ['db']" in problems
+    assert "secrets absents de swarm_secrets : ['api']" in problems
 
 
 def _svc(**kwargs):

@@ -4,6 +4,15 @@ Serveur MCP (FastMCP, Streamable HTTP) qui pilote un repo Ansible. Claude peut
 lire l'état du parc, simuler un changement et, avec un token d'écriture,
 appliquer un playbook existant. Il ne peut rien exécuter d'autre.
 
+Le projet livre deux choses, versionnées ensemble :
+- **l'outil** (`src/infra_mcp/`) : le serveur MCP et la commande `infra-mcp lint` ;
+- **le socle Ansible** (collection `infra_mcp.core`, `src/ansible_collections/`) :
+  ce que tout serveur reçoit, avec ses garde-fous.
+
+`ansible/` est un repo de config : inventaire, variables, stacks, vault, et des
+playbooks d'une ligne qui importent ceux du socle. Il a vocation à vivre dans
+son propre repo.
+
 ## Modèle de sécurité
 
 | Outil            | Niveau | Effet                                                        |
@@ -43,6 +52,34 @@ que les playbooks ne changent que par commit dans le repo.
 `plan site` sur `all` sert aussi de détection de dérive : tout `changed` est un
 écart entre une machine et le repo.
 
+## Socle (infra_mcp.core)
+
+Installée avec l'outil (`pip install`), la collection est trouvée par Ansible
+sans configuration. `playbooks/site.yml` du repo de config se résume à
+`ansible.builtin.import_playbook: infra_mcp.core.site`.
+
+Le rôle `base`, appliqué à tous les serveurs :
+- **garde-fous** d'abord : rien n'est modifié si la configuration est dangereuse ;
+- **paquets** : ca-certificates, curl, unattended-upgrades ; telnet retiré ;
+- **mises à jour de sécurité** automatiques, redémarrage à `updates_reboot_time` ;
+- **heure** : fuseau `base_timezone` (UTC), synchronisation par
+  systemd-timesyncd (sauf si chrony est déjà là) ;
+- **journaux** : journald limité à `base_journald_max_use` (500M) ;
+- **comptes admin** : clés SSH exclusives, sudo exclusif ;
+- **SSH** : clé uniquement, jamais root (`sshd_config.d/10-infra-base.conf`,
+  validé par `sshd -t`, prioritaire sur cloud-init) ;
+- **firewall** : entrée en deny, port SSH toujours ouvert ;
+- **comptes retirés** en dernier.
+
+Ses valeurs par défaut (`roles/base/defaults/main.yml`) se surchargent dans
+l'inventaire. Ses **verrous** (`roles/base/vars/main.yml`, aujourd'hui le
+firewall en deny) ne peuvent pas l'être : le rôle échoue si un étage essaie.
+Un repo de config peut ajouter ses propres verrous avec `locked_vars`.
+
+`infra-mcp lint <dossier>` vérifie un repo de config avec les règles de l'outil
+(plan reste une simulation, disposition des variables, politique des stacks) :
+à lancer dans sa CI, avec la même version de l'outil.
+
 ## Configuration à étages
 
 Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>.yml`
@@ -53,7 +90,7 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 - **Listes** : elles s'additionnent. Chaque étage définit sa propre variable avec
   un suffixe (`packages_present_global`, `packages_present_swarm`,
   `packages_present_host`) et le rôle `base` fusionne tout ce qui commence par
-  `packages_present_`. Même principe pour `packages_absent_`, `firewall_allow_`,
+  `packages_present_`, y compris `packages_present_base` du socle. Même principe pour `packages_absent_`, `firewall_allow_`,
   `firewall_remove_`, `admin_users_` et `users_absent_`.
 - **Retraits** : enlever un élément d'une liste ne défait rien sur les serveurs.
   Pour fermer un port, liste la règle dans `firewall_remove_*` (avec la même
@@ -65,9 +102,9 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 - **Sudo** : géré en exclusif. Passer un admin à `sudo: false`, ou le retirer
   de `admin_users_*`, supprime son fichier sudo. Seuls les fichiers créés par
   le rôle (marqués `# ansible-managed: role base`) sont concernés.
-- **Valeurs verrouillées** : `policy/locked.yml`, chargé par les playbooks avec
-  une priorité supérieure à l'inventaire. Si un étage tente de les modifier, le
-  rôle `base` échoue avant de toucher quoi que ce soit.
+- **Valeurs verrouillées** : celles du socle, plus `locked_vars` du repo de
+  config. Si un étage tente de les modifier, le rôle `base` échoue avant de
+  toucher quoi que ce soit.
 
 ## Stacks Swarm
 
@@ -91,7 +128,7 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 - **plan** : `docker_stack` ne sait pas simuler. Chaque service porte l'empreinte
   de son compose (label `infra.stack-hash`) ; `plan stacks` la compare à celle
   qui tourne et annonce « à créer », « à redéployer » ou « à supprimer ».
-- **Politique** (vérifiée par la CI, `tests/test_stacks_policy.py`) : image avec
+- **Politique** (vérifiée par `infra-mcp lint`) : image avec
   un tag explicite (jamais `latest`), pas de `privileged`, réseau/pid/ipc de
   l'hôte, `cap_add`, `devices`, montage du socket Docker ou de chemins sensibles
   de l'hôte. Une exception se déclare sur le service, avec sa raison :
@@ -121,8 +158,8 @@ sudo mkdir -p /opt/infra-mcp /opt/infra /etc/infra-mcp /var/log/infra-mcp
 sudo chown infra-mcp: /opt/infra /etc/infra-mcp /var/log/infra-mcp
 sudo -u infra-mcp git clone git@github.com:renaud/infra.git /opt/infra
 sudo python3 -m venv /opt/infra-mcp/venv
-sudo /opt/infra-mcp/venv/bin/pip install /chemin/vers/infra-mcp ansible
-# (le paquet « ansible » complet embarque les collections de requirements.yml)
+sudo /opt/infra-mcp/venv/bin/pip install /chemin/vers/infra-mcp
+# (installe aussi le socle infra_mcp.core et le paquet ansible complet)
 
 # Mot de passe ansible-vault (le même que sur ton poste, à garder dans ton
 # gestionnaire de mots de passe). Saisi sans écho ni historique, lisible par
@@ -164,20 +201,25 @@ claude mcp add --transport http infra https://mcp.example.fr/mcp \
 ## Développement
 
 ```bash
-pip install -e '.[dev]'
-pytest                                        # serveur, tokens, garde-fous Ansible
-cd ansible && ansible-galaxy collection install -r requirements.yml && ansible-lint
+pip install -e '.[dev]'                       # outil, socle, ansible complet
+pytest                                        # serveur, tokens, socle, garde-fous
+(cd src/ansible_collections/infra_mcp/core && ansible-lint)
+(cd ansible && infra-mcp lint . && ansible-lint)
 ```
 
-La CI (`.github/workflows/ci.yml`) lance les deux sur chaque PR. Comme le timer
+La CI (`.github/workflows/ci.yml`) lance tout cela sur chaque PR, plus le test
+de bout en bout des stacks sur un vrai swarm. Comme le timer
 déploie tout ce qui est mergé, protège la branche principale en exigeant
 qu'elle passe.
 
 ## Limites connues
 
 - **Premier passage** : le rôle `base` crée l'utilisateur admin. Sur une machine
-  neuve, lance-le une fois à la main depuis le contrôleur avec
-  `ansible-playbook playbooks/site.yml -l <hôte> -e ansible_user=root`.
+  neuve, lance-le une fois à la main depuis le contrôleur, avec l'Ansible du
+  venv (qui contient le socle) :
+  `/opt/infra-mcp/venv/bin/ansible-playbook playbooks/site.yml -l <hôte> -e ansible_user=root`.
+  Après ce passage, root ne peut plus se connecter en SSH : vérifie que ta clé
+  et celle du contrôleur sont bien dans `admin_users_global`.
 - **Check mode** : les tâches `command` / `shell` ne sont pas simulées, elles
   sont sautées par `plan`. Préfère les modules qui gèrent le check mode (`stat`,
   `slurp`, `getent`, `package_facts`…). `check_mode: false` et le lookup `pipe`

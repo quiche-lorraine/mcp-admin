@@ -1,0 +1,22 @@
+# Valeurs par défaut du socle. L'inventaire les surcharge (valeurs simples) ou les
+# complète (listes : chaque étage définit sa variable *_global, *_<groupe>, *_host,
+# et le rôle additionne toutes celles qui partagent le préfixe, *_base compris).
+
+packages_present_base: [ca-certificates, curl, unattended-upgrades]
+packages_absent_base: [telnet]
+
+firewall_default_incoming: deny   # verrouillée (vars/main.yml)
+firewall_allow_base:
+  - { port: "{{ ansible_port | default(22) | string }}", proto: tcp }
+firewall_remove_base: []
+
+admin_users_base: []
+users_absent_base: []
+
+updates_auto_reboot: true
+updates_reboot_time: "04:00"
+
+base_timezone: Etc/UTC
+base_journald_max_use: 500M
+# Renommer une machine change aussi son nom de nœud Swarm : désactivé par défaut.
+base_manage_hostname: false
