@@ -111,8 +111,11 @@ def _data_violations(node, path_keys_ok=True):
             key = str(key)
             if key in _CONTROLLER_KEYS:
                 yield f"{key} : interdit (exécution sur le contrôleur)"
-            if key == "hosts" and any(h in str(value) for h in ("localhost", "127.0.0.1")):
-                yield "hosts: localhost : interdit (exécution sur le contrôleur)"
+            # hosts d'un play (texte ou liste), pas le mapping hosts: de l'inventaire,
+            # où une machine peut légitimement avoir l'adresse 127.0.0.1.
+            if key == "hosts" and isinstance(value, (str, list)):
+                if any(h in str(value) for h in ("localhost", "127.0.0.1")):
+                    yield "hosts: localhost : interdit (exécution sur le contrôleur)"
             if _CONNECTION_VAR_RE.match(key):
                 if not (key.endswith("_interpreter") and _SAFE_INTERPRETER_RE.match(str(value))):
                     yield f"{key} : interdit (agit sur la connexion, permet d'exécuter des commandes)"

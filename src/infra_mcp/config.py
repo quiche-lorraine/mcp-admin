@@ -1,4 +1,4 @@
-"""Configuration par variables d'environnement (voir deploy/infra-mcp.service)."""
+"""Configuration par variables d'environnement (voir src/infra_mcp/deploy/infra-mcp.service)."""
 
 import os
 from pathlib import Path
