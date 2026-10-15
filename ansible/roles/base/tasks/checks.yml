@@ -1,0 +1,64 @@
+# Fusion des couches et garde-fous. Aucune tâche ne touche la machine : tout
+# échoue ici, avant le moindre changement, si la configuration est dangereuse.
+# tests/test_base_checks.py exécute ce fichier tel quel.
+
+- name: Vérifie les valeurs verrouillées (policy/locked.yml)
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.vars', item.key) == item.value
+    fail_msg: "{{ item.key }} est verrouillée à « {{ item.value }} » : surcharge interdite"
+    quiet: true
+  loop: "{{ locked_vars | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Additionne les couches (global + groupes + hôte)
+  ansible.builtin.set_fact:
+    base_packages_present: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_present_')) | flatten | unique }}"
+    base_packages_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^packages_absent_')) | flatten | unique }}"
+    base_firewall_allow: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_allow_')) | flatten | unique }}"
+    base_firewall_remove: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^firewall_remove_')) | flatten | unique }}"
+    base_admin_users: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^admin_users_')) | flatten }}"
+    base_users_absent: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^users_absent_')) | flatten | unique }}"
+
+# --- Retraits : ne jamais se couper l'accès -----------------------------------
+
+- name: Aucun compte n'est à la fois admin et à supprimer
+  ansible.builtin.assert:
+    that: _conflict | length == 0
+    fail_msg: "dans admin_users_* et users_absent_* à la fois : {{ _conflict | join(', ') }}"
+    quiet: true
+  vars:
+    _conflict: "{{ base_users_absent | intersect(base_admin_users | map(attribute='name')) }}"
+
+- name: Ni root ni le compte d'Ansible ne sont supprimés
+  ansible.builtin.assert:
+    that: _protected | intersect(base_users_absent) | length == 0
+    fail_msg: "users_absent_* ne peut pas contenir {{ _protected | intersect(base_users_absent) | join(', ') }}"
+    quiet: true
+  vars:
+    _protected: "{{ ['root', ansible_user | default('root')] }}"
+
+- name: Le port SSH n'est jamais retiré
+  ansible.builtin.assert:
+    that: (ansible_port | default(22) | string) not in (base_firewall_remove | map(attribute='port') | map('string'))
+    fail_msg: >-
+      firewall_remove_* ne peut pas toucher au port SSH ({{ ansible_port | default(22) }}) :
+      une erreur couperait l'accès au serveur. Restreindre SSH se fait à la main.
+    quiet: true
+
+# Clé de comparaison port/proto/source : « 22 » et 22 désignent la même règle.
+- name: Clés des règles ouvertes
+  ansible.builtin.set_fact:
+    base_firewall_allow_keys: "{{ base_firewall_allow_keys | default([]) + [item.port ~ '/' ~ item.proto ~ '/' ~ (item.src | default('any'))] }}"
+  loop: "{{ base_firewall_allow }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"
+
+- name: Une règle n'est pas à la fois ouverte et retirée
+  ansible.builtin.assert:
+    that: (item.port ~ '/' ~ item.proto ~ '/' ~ (item.src | default('any'))) not in (base_firewall_allow_keys | default([]))
+    fail_msg: "{{ item.port }}/{{ item.proto }} est dans firewall_allow_* et firewall_remove_* à la fois"
+    quiet: true
+  loop: "{{ base_firewall_remove }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }}"

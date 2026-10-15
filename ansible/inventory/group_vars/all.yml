@@ -34,5 +34,16 @@ admin_users_global:
       # exclusif, une clé absente de cette liste est retirée des serveurs.
       - "ssh-ed25519 AAAA...remplace-moi infra-mcp@controleur"
 
+# Retirer une entrée des listes ci-dessus ne défait rien sur les serveurs : le
+# port reste ouvert, le compte existe toujours. Pour retirer, liste l'élément ici
+# (ou dans firewall_remove_<groupe> / users_absent_host…). Le port SSH, root et
+# ansible_user sont protégés : le rôle base refuse de les retirer.
+firewall_remove_global: []
+#  - { port: "8080", proto: tcp }   # même src que la règle d'origine, s'il y en a une
+users_absent_global: []
+#  - ancien-admin                   # compte supprimé, dossier personnel conservé
+
 updates_auto_reboot: true
+# Heure de redémarrage si une mise à jour l'exige. Décalée pour les workers du
+# swarm (group_vars/swarm_workers.yml) afin que tout le parc ne tombe pas ensemble.
 updates_reboot_time: "04:00"
