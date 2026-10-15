@@ -107,6 +107,8 @@ def test_cycle_de_vie_d_une_stack(env):
     spec = env.service()
     assert "infra.stack-hash" in spec["Labels"] and spec["Labels"]["role"] == "exemple"
     assert spec["TaskTemplate"]["ContainerSpec"]["Secrets"][0]["SecretName"] == f"{SECRET}_v1"
+    options = json.loads(docker("network", "inspect", f"{STACK}_default"))[0]["Options"]
+    assert options.get("encrypted") == "true", options  # trafic entre nœuds chiffré
 
     # 3. rien n'a changé : plan et apply ne font rien
     assert env.run("--check")["changed"] == 0

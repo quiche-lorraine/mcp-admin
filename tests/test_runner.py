@@ -147,3 +147,25 @@ def test_executables_du_venv(monkeypatch, tmp_path):
     monkeypatch.setattr(runner.sys, "executable", str(tmp_path / "python"))
     assert runner._bin("ansible-playbook") == str(tmp_path / "ansible-playbook")
     assert runner._bin("absent") == "absent"
+
+
+async def test_plans_simultanes_bornes(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    running = 0
+
+    async def fake_run(*args, timeout=None):
+        nonlocal running
+        running += 1
+        if running == config.MAX_PLANS:
+            started.set()
+        await release.wait()
+        return {"returncode": 0, "output": ""}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    plans = [asyncio.create_task(runner.playbook("site", "all", check=True)) for _ in range(config.MAX_PLANS)]
+    await started.wait()
+    with pytest.raises(ToolError, match="plan en cours"):
+        await runner.playbook("site", "all", check=True)
+    release.set()
+    assert [(await p)["returncode"] for p in plans] == [0] * config.MAX_PLANS
+    assert (await runner.playbook("site", "all", check=True))["returncode"] == 0  # place libérée

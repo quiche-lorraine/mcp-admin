@@ -2,12 +2,15 @@
 # masque ces noms, une autre variable déchiffrée lui serait renvoyée en clair.
 # Seuls les noms sont lus et comparés, jamais les valeurs.
 
-- name: Fichiers vault de l'inventaire
+# Tous les fichiers chiffrés, quel que soit leur nom : un secrets.yml chiffré
+# serait lui aussi déchiffré par host_vars.
+- name: Fichiers chiffrés de l'inventaire
   ansible.builtin.find:
     paths:
       - "{{ inventory_dir }}/group_vars"
       - "{{ inventory_dir }}/host_vars"
-    patterns: vault.yml
+    patterns: ["*.yml", "*.yaml", "*.json"]
+    contains: '^\$ANSIBLE_VAULT'
     recurse: true
   register: vault_files
   run_once: true

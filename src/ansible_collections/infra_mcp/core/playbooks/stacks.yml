@@ -85,11 +85,15 @@
                'secrets': item.secrets | default([]),
                'compose': _compose,
                'services': _compose.services.keys() | list,
-               'hash': (_text ~ (item.secrets | default([]) | to_json)) | hash('sha256'),
+               'networks': (_compose.networks | default({}, true)).keys() | list,
+               'hash': (_text ~ (item.secrets | default([]) | to_json) ~ _override) | hash('sha256'),
              }] }}
       vars:
         _text: "{{ lookup('ansible.builtin.file', stacks_path ~ '/' ~ item.name ~ '/compose.yml') }}"
         _compose: "{{ _text | from_yaml }}"
+        # Ce que le socle ajoute au compose fait partie de l'empreinte : une nouvelle
+        # version de l'outil qui le change annonce un redéploiement en plan.
+        _override: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/templates/stack-override.yml.j2') }}"
       loop: "{{ swarm_stacks }}"
       loop_control:
         label: "{{ item.name }}"
