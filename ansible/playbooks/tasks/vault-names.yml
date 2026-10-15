@@ -1,0 +1,29 @@
+# Toute variable d'un fichier vault doit commencer par vault_ : l'outil host_vars
+# masque ces noms, une autre variable déchiffrée lui serait renvoyée en clair.
+# Seuls les noms sont lus et comparés, jamais les valeurs.
+
+- name: Fichiers vault de l'inventaire
+  ansible.builtin.find:
+    paths:
+      - "{{ inventory_dir }}/group_vars"
+      - "{{ inventory_dir }}/host_vars"
+    patterns: vault.yml
+    recurse: true
+  register: vault_files
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Les variables chiffrées commencent par vault_
+  ansible.builtin.assert:
+    that: _keys | reject('match', '^vault_') | list | length == 0
+    fail_msg: >-
+      {{ item }} : {{ _keys | reject('match', '^vault_') | join(', ') }} doivent être
+      renommées en vault_… pour ne jamais apparaître en clair dans host_vars.
+    quiet: true
+  vars:
+    _keys: "{{ (lookup('ansible.builtin.unvault', item) | from_yaml | default({}, true)).keys() | list }}"
+  loop: "{{ vault_files.files | map(attribute='path') | sort }}"
+  run_once: true
+  delegate_to: localhost
+  become: false

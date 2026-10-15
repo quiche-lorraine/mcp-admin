@@ -37,7 +37,7 @@ def test_limit_refusee(limit):
 
 
 def test_playbooks_du_repo():
-    assert runner.list_playbooks() == ["site", "swarm-join"]
+    assert runner.list_playbooks() == ["site", "stacks", "swarm-join"]
     assert runner.playbook_path("site") == str(config.ANSIBLE_DIR / "playbooks" / "site.yml")
 
 

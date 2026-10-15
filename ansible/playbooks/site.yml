@@ -4,6 +4,9 @@
   become: true
   vars_files:
     - ../policy/locked.yml
+  pre_tasks:
+    - name: Noms des variables vault
+      ansible.builtin.import_tasks: tasks/vault-names.yml
   roles:
     - base
     - role: docker

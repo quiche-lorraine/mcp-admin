@@ -16,7 +16,10 @@ appliquer un playbook existant. Il ne peut rien exécuter d'autre.
 | `apply`          | write  | Exécute un playbook du repo, `limit` obligatoire             |
 
 Volontairement absents : commande shell, tâche ad hoc, création de playbook,
-accès Vault. Un token `read` ne voit même pas `apply` dans la liste des outils.
+lecture des secrets. Le vault est déchiffré par Ansible au moment d'exécuter,
+jamais renvoyé à Claude : `host_vars` masque les variables `vault_*` et les
+tâches qui manipulent des secrets sont en `no_log`. Un token `read` ne voit même
+pas `apply` dans la liste des outils.
 
 - Les tokens sont stockés sous forme d'empreinte SHA-256 et relus à chaque
   requête : une révocation est immédiate, sans redémarrage.
@@ -34,7 +37,8 @@ que les playbooks ne changent que par commit dans le repo.
 
 1. Claude (ou toi) modifie `group_vars` / `host_vars` et ouvre une PR.
 2. Après le merge, le timer `infra-mcp-sync` fait un `git pull` sur le contrôleur.
-3. `plan site` montre l'effet ; `apply site` l'applique.
+3. `plan site` montre l'effet ; `apply site` l'applique. Pareil pour les
+   stacks Swarm avec `plan stacks` / `apply stacks`.
 
 `plan site` sur `all` sert aussi de détection de dérive : tout `changed` est un
 écart entre une machine et le repo.
@@ -65,6 +69,35 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   une priorité supérieure à l'inventaire. Si un étage tente de les modifier, le
   rôle `base` échoue avant de toucher quoi que ce soit.
 
+## Stacks Swarm
+
+`playbooks/stacks.yml` déploie des stacks depuis le premier manager du swarm
+(après `site` et `swarm-join`).
+
+- **Une stack** = `ansible/stacks/<nom>/compose.yml`, déclarée dans
+  `swarm_stacks` (`group_vars/swarm_managers/stacks.yml`). La retirer de la
+  liste ne la supprime pas : liste-la dans `swarm_stacks_absent`.
+- **Secrets** : chiffrés avec ansible-vault dans
+  `group_vars/swarm_managers/vault.yml`, sous des noms `vault_*` (le playbook
+  refuse les autres : `host_vars` les afficherait en clair). `swarm_secrets`
+  les transforme en secrets Docker ; le compose les déclare `external: true` et
+  la stack les liste dans `secrets`. Changer une valeur crée une nouvelle
+  version (`nom_v2`…) et redéploie les stacks concernées.
+
+  ```bash
+  ansible-vault create ansible/inventory/group_vars/swarm_managers/vault.yml
+  ansible-vault edit   ansible/inventory/group_vars/swarm_managers/vault.yml
+  ```
+- **plan** : `docker_stack` ne sait pas simuler. Chaque service porte l'empreinte
+  de son compose (label `infra.stack-hash`) ; `plan stacks` la compare à celle
+  qui tourne et annonce « à créer », « à redéployer » ou « à supprimer ».
+- **Politique** (vérifiée par la CI, `tests/test_stacks_policy.py`) : image avec
+  un tag explicite (jamais `latest`), pas de `privileged`, réseau/pid/ipc de
+  l'hôte, `cap_add`, `devices`, montage du socket Docker ou de chemins sensibles
+  de l'hôte. Une exception se déclare sur le service, avec sa raison :
+  `x-allow: {docker-socket: "Portainer pilote Docker"}`. Elle reste visible en
+  revue de PR.
+
 ## Installation sur le contrôleur
 
 ```bash
@@ -90,6 +123,12 @@ sudo -u infra-mcp git clone git@github.com:renaud/infra.git /opt/infra
 sudo python3 -m venv /opt/infra-mcp/venv
 sudo /opt/infra-mcp/venv/bin/pip install /chemin/vers/infra-mcp ansible
 # (le paquet « ansible » complet embarque les collections de requirements.yml)
+
+# Mot de passe ansible-vault (le même que sur ton poste, à garder dans ton
+# gestionnaire de mots de passe). Saisi sans écho ni historique, lisible par
+# le service seulement.
+read -rsp 'Mot de passe vault : ' P && printf '%s\n' "$P" \
+  | sudo install -m 400 -o infra-mcp -g infra-mcp /dev/stdin /etc/infra-mcp/vault-pass; unset P
 
 # Services
 sudo cp deploy/infra-mcp*.service deploy/infra-mcp-sync.timer /etc/systemd/system/
@@ -153,5 +192,11 @@ qu'elle passe.
   entre eux dans leur `host_vars`.
 - **Comptes retirés** : la suppression échoue si le compte a encore des
   processus (session ouverte, cron). Termine-les, puis relance `apply`.
+- **Stacks** : `plan` voit les changements par service, pas les services
+  retirés d'un compose (`apply` les supprime, grâce à `--prune`). Les configs
+  `file:` ne sont pas encore prises en charge. Les images ne sont pas
+  résolues par le registre (sinon chaque apply redémarrait les services) :
+  pousser une nouvelle image sous le même tag n'est pas détecté. Change le tag,
+  ou fige l'image par son digest (`image@sha256:…`).
 - **Swarm** : seul le join des workers est automatisé. La promotion d'un manager
   reste manuelle, et le token manager n'est jamais manipulé.

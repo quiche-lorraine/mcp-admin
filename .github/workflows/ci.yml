@@ -39,3 +39,17 @@ jobs:
       - run: ansible-galaxy collection install -r requirements.yml
       - run: ansible-playbook --syntax-check playbooks/*.yml
       - run: ansible-lint
+
+  # Bout en bout sur un vrai swarm à un nœud : plan, apply, rotation de secret,
+  # suppression (tests/test_stacks_e2e.py, sauté ailleurs faute de swarm).
+  stacks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -e '.[dev]' docker jsondiff
+      - run: ansible-galaxy collection install -r ansible/requirements.yml
+      - run: docker swarm init --advertise-addr 127.0.0.1
+      - run: pytest -v tests/test_stacks_e2e.py

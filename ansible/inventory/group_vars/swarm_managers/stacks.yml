@@ -1,0 +1,14 @@
+# Stacks déployées par playbooks/stacks.yml, depuis le premier manager.
+# Chaque stack est décrite par ansible/stacks/<nom>/compose.yml.
+swarm_stacks: []
+#  - name: whoami
+#    secrets: [whoami_token]   # secrets Docker que la stack utilise
+
+# Retirer une stack de swarm_stacks ne la supprime pas du swarm : liste-la ici.
+swarm_stacks_absent: []
+
+# Secrets Docker, alimentés par des variables vault_* chiffrées avec ansible-vault
+# dans group_vars/swarm_managers/vault.yml (même dossier). Changer une valeur crée une nouvelle
+# version du secret et redéploie les stacks qui l'utilisent.
+swarm_secrets: {}
+#  whoami_token: "{{ vault_whoami_token }}"
