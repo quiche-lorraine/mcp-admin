@@ -60,8 +60,18 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 ```bash
 # Utilisateur dédié, avec sa clé SSH vers le parc
 sudo useradd --system --create-home --home-dir /var/lib/infra-mcp --shell /usr/sbin/nologin infra-mcp
+sudo install -d -m 700 -o infra-mcp -g infra-mcp /var/lib/infra-mcp/.ssh
 sudo -u infra-mcp ssh-keygen -t ed25519 -N "" -f /var/lib/infra-mcp/.ssh/id_ed25519
 # → ajoute la clé publique dans admin_users_global (group_vars/all.yml)
+
+# Clés d'hôte du parc (host_key_checking est actif : sans elles, Ansible refuse
+# de se connecter). Compare les empreintes affichées avec celles de chaque
+# serveur (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub, depuis la console
+# de l'hébergeur) avant de les accepter.
+ssh-keyscan -t ed25519 203.0.113.10 203.0.113.11 203.0.113.12 > /tmp/known_hosts
+ssh-keygen -lf /tmp/known_hosts
+sudo install -m 644 -o infra-mcp -g infra-mcp /tmp/known_hosts /var/lib/infra-mcp/.ssh/known_hosts
+# Pour un hôte ajouté plus tard : même chose, en ajoutant (>>) au fichier existant.
 
 # Code et repo
 sudo mkdir -p /opt/infra-mcp /opt/infra /etc/infra-mcp /var/log/infra-mcp
@@ -102,13 +112,28 @@ claude mcp add --transport http infra https://mcp.example.fr/mcp \
   --header "Authorization: Bearer imcp_..."
 ```
 
+## Développement
+
+```bash
+pip install -e '.[dev]'
+pytest                                        # serveur, tokens, garde-fous Ansible
+cd ansible && ansible-galaxy collection install -r requirements.yml && ansible-lint
+```
+
+La CI (`.github/workflows/ci.yml`) lance les deux sur chaque PR. Comme le timer
+déploie tout ce qui est mergé, protège la branche principale en exigeant
+qu'elle passe.
+
 ## Limites connues
 
 - **Premier passage** : le rôle `base` crée l'utilisateur admin. Sur une machine
   neuve, lance-le une fois à la main depuis le contrôleur avec
   `ansible-playbook playbooks/site.yml -l <hôte> -e ansible_user=root`.
-- **Check mode** : les tâches `command` / `shell` ne sont pas simulées. Évite-les
-  dans les rôles, ou marque-les `check_mode: false` quand elles sont en lecture.
+- **Check mode** : les tâches `command` / `shell` ne sont pas simulées, elles
+  sont sautées par `plan`. Préfère les modules qui gèrent le check mode (`stat`,
+  `slurp`, `getent`, `package_facts`…). `check_mode: false` et le lookup `pipe`
+  sont interdits, et la CI refuse une PR qui en contient : ils feraient exécuter
+  quelque chose pour de vrai par `plan`, qui n'exige qu'un token `read`.
 - **Docker et ufw** : les ports publiés par Docker contournent ufw. Le firewall
   du rôle `base` protège les services de l'hôte, pas les conteneurs.
 - **Serveur Coolify** : `docker_engine_managed: false` dans son `host_vars`,

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev]'
+      # Comprend le garde-fou qui interdit check_mode: false et le lookup pipe
+      # dans le repo Ansible (tests/test_ansible_policy.py).
+      - run: pytest -v
+
+  ansible:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install ansible-core ansible-lint
+      - run: ansible-galaxy collection install -r requirements.yml
+      - run: ansible-playbook --syntax-check playbooks/*.yml
+      - run: ansible-lint

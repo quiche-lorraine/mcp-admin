@@ -11,7 +11,9 @@ from . import config
 
 # Noms d'hôtes, de groupes, ou liste séparée par des virgules. Pas de « @fichier »,
 # pas de motifs exotiques : on cible ce qui est déclaré dans l'inventaire, rien d'autre.
-_LIMIT_RE = re.compile(r"^[A-Za-z0-9_.\-]+(,[A-Za-z0-9_.\-]+)*$")
+# Pas de tiret en tête de nom : « --list » serait lu comme une option par Ansible.
+_NAME = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+_LIMIT_RE = re.compile(rf"^{_NAME}(,{_NAME})*$")
 _PLAYBOOK_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 _SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault)", re.I)
 
@@ -19,14 +21,14 @@ _apply_lock = asyncio.Lock()
 
 
 def check_limit(limit: str) -> str:
-    if not _LIMIT_RE.match(limit):
+    if not _LIMIT_RE.fullmatch(limit):
         raise ToolError("limit invalide : noms d'hôtes ou de groupes séparés par des virgules")
     return limit
 
 
 def playbook_path(name: str) -> str:
     """Seuls les playbooks présents dans le repo sont exécutables : l'agent ne peut pas en créer."""
-    if not _PLAYBOOK_RE.match(name):
+    if not _PLAYBOOK_RE.fullmatch(name):
         raise ToolError("nom de playbook invalide")
     path = (config.ANSIBLE_DIR / "playbooks" / f"{name}.yml").resolve()
     if path.parent != (config.ANSIBLE_DIR / "playbooks").resolve() or not path.is_file():
@@ -74,6 +76,7 @@ async def run(*args: str, timeout: int | None = None) -> dict:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout or config.PLAYBOOK_TIMEOUT)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()  # sinon le processus reste zombie
         raise ToolError("délai dépassé, exécution interrompue")
     return {"returncode": proc.returncode, "output": out.decode(errors="replace")}
 
