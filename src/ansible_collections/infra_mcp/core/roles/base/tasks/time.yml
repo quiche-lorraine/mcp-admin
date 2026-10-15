@@ -1,0 +1,32 @@
+# --- Heure ---------------------------------------------------------------------
+
+- name: Fuseau horaire
+  community.general.timezone:
+    name: "{{ base_timezone }}"
+
+- name: Paquets installés
+  ansible.builtin.package_facts:
+
+# chrony, s'il est présent, synchronise déjà l'heure ; installer timesyncd le
+# désinstallerait (les deux paquets sont en conflit).
+- name: Synchronisation de l'heure (systemd-timesyncd)
+  when: "'chrony' not in ansible_facts.packages"
+  block:
+    - name: Paquet systemd-timesyncd
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      register: base_timesyncd_package
+
+    # En plan, un paquet seulement « à installer » n'a pas encore de service.
+    - name: Service systemd-timesyncd actif
+      ansible.builtin.systemd_service:
+        name: systemd-timesyncd
+        state: started
+        enabled: true
+      when: not (ansible_check_mode and base_timesyncd_package is changed)
+
+- name: Nom d'hôte issu de l'inventaire
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  when: base_manage_hostname | bool

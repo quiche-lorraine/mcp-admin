@@ -1,0 +1,17 @@
+# --- Journaux ------------------------------------------------------------------
+
+- name: Dossier de configuration de journald
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Taille maximale des journaux
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-infra-base.conf
+    mode: "0644"
+    content: |
+      # Géré par Ansible (infra_mcp.core.base) — ne pas modifier à la main.
+      [Journal]
+      SystemMaxUse={{ base_journald_max_use }}
+  notify: Redémarrer journald

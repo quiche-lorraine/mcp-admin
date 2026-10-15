@@ -1,0 +1,41 @@
+# --- Comptes retirés -------------------------------------------------------------
+# En dernier : si la suppression échoue (processus encore actifs), tout le reste
+# du rôle, firewall compris, a déjà été appliqué.
+
+- name: Comptes existants
+  ansible.builtin.getent:
+    database: passwd
+  when: base_users_absent | length > 0
+
+- name: Dossier personnel des comptes retirés
+  ansible.builtin.stat:
+    path: "{{ ansible_facts.getent_passwd[item][4] }}"
+  loop: "{{ base_users_absent | select('in', ansible_facts.getent_passwd | default({})) }}"
+  register: base_users_absent_homes
+
+# Le dossier est conservé, mais réservé à root : sinon le prochain compte créé,
+# qui peut recevoir le même UID, en hériterait (.ssh, historique…). Seuls les
+# dossiers sous /home sont concernés : certains comptes système ont / ou /bin.
+- name: Dossier personnel réservé à root
+  ansible.builtin.file:
+    path: "{{ item.stat.path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ base_users_absent_homes.results | default([]) | selectattr('stat.exists') | selectattr('stat.isdir') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.path is match('^/home/[^/]+$')
+
+- name: Sudo des comptes retirés
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/90-{{ item }}"
+    state: absent
+  loop: "{{ base_users_absent }}"
+
+- name: Comptes retirés
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: false
+  loop: "{{ base_users_absent }}"

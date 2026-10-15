@@ -5,6 +5,8 @@ import json
 import os
 import re
 import signal
+import sys
+from pathlib import Path
 
 from fastmcp.exceptions import ToolError
 
@@ -59,6 +61,13 @@ def _truncate(text: str) -> str:
     return f"[… {len(text) - config.MAX_OUTPUT} caractères tronqués …]\n" + text[-config.MAX_OUTPUT:]
 
 
+def _bin(name: str) -> str:
+    """ansible-* du venv de l'outil : c'est là que vivent la collection
+    infra_mcp.core et ses dépendances. Sous systemd, le PATH ne contient pas le venv."""
+    candidate = Path(sys.executable).parent / name
+    return str(candidate) if candidate.exists() else name
+
+
 async def run(*args: str, timeout: int | None = None) -> dict:
     env = {
         **os.environ,
@@ -105,20 +114,20 @@ def recap(output: str) -> dict:
 
 
 async def inventory_graph() -> str:
-    res = await run("ansible-inventory", "--graph", timeout=60)
+    res = await run(_bin("ansible-inventory"), "--graph", timeout=60)
     return _truncate(res["output"])
 
 
 async def host_vars(host: str) -> dict:
     check_limit(host)
-    res = await run("ansible-inventory", "--host", host, timeout=60)
+    res = await run(_bin("ansible-inventory"), "--host", host, timeout=60)
     if res["returncode"] != 0:
         raise ToolError(_truncate(res["output"]))
     return redact(json.loads(res["output"]))
 
 
 async def playbook(name: str, limit: str, check: bool) -> dict:
-    args = ["ansible-playbook", playbook_path(name), "--limit", check_limit(limit), "--diff"]
+    args = [_bin("ansible-playbook"), playbook_path(name), "--limit", check_limit(limit), "--diff"]
     if check:
         args.append("--check")
         res = await run(*args)

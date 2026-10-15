@@ -1,0 +1,7 @@
+skip_list:
+  # Les variables publiques du rôle base (packages_present_*, firewall_allow_*,
+  # admin_users_*…) sont l'interface des repos de config : elles ne portent pas
+  # le préfixe base_. Les variables internes, elles, le portent.
+  - var-naming[no-role-prefix]
+  # ansible-lint ne connaît pas encore ansible-core 2.20, exigé par infra-mcp.
+  - meta-runtime[unsupported-version]

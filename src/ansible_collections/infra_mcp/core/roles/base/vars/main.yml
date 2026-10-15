@@ -1,0 +1,5 @@
+# Valeurs verrouillées du socle. Les variables de rôle passent avant l'inventaire,
+# et checks.yml fait échouer le rôle si un étage tente de les modifier. Un repo
+# de config peut en verrouiller d'autres via locked_vars, jamais celles-ci.
+base_locked_vars:
+  firewall_default_incoming: deny

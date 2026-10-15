@@ -6,22 +6,20 @@
 # ajoute donc à la liste au lieu de la remplacer.
 #
 # Les valeurs simples (non-listes) suivent la priorité Ansible classique :
-# l'hôte gagne sur le groupe, qui gagne sur le global. Les valeurs verrouillées
-# sont dans policy/locked.yml.
+# l'hôte gagne sur le groupe, qui gagne sur le global, qui gagne sur les valeurs
+# par défaut du socle. Le socle verrouille certaines valeurs (firewall en deny) ;
+# locked_vars permet d'en verrouiller d'autres.
+
+# Le socle (infra_mcp.core.base) fournit déjà : ca-certificates, curl,
+# unattended-upgrades, SSH ouvert, entrée en deny (verrouillée), telnet retiré.
+# Ces listes s'y ajoutent.
 
 ansible_user: renaud
 
 packages_present_global:
-  - ca-certificates
-  - curl
   - htop
-  - unattended-upgrades
-packages_absent_global:
-  - telnet
 
-firewall_default_incoming: deny
 firewall_allow_global:
-  - { port: "22", proto: tcp }
   - { port: "80", proto: tcp }
   - { port: "443", proto: tcp }
 
@@ -43,7 +41,6 @@ firewall_remove_global: []
 users_absent_global: []
 #  - ancien-admin                   # compte supprimé, dossier personnel conservé
 
-updates_auto_reboot: true
 # Heure de redémarrage si une mise à jour l'exige. Décalée pour les workers du
 # swarm (group_vars/swarm_workers.yml) et pour srv-01 (host_vars) afin que tout
 # le parc ne tombe pas ensemble.

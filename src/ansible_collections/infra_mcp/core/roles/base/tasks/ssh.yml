@@ -1,0 +1,37 @@
+# --- SSH --------------------------------------------------------------------------
+# Connexion par clé uniquement, jamais en root. Les comptes admin et leurs clés
+# sont en place avant (users.yml), et checks.yml exige au moins un admin avec
+# sudo et une clé : on ne se coupe pas l'accès.
+
+- name: Configuration SSH principale
+  ansible.builtin.slurp:
+    src: /etc/ssh/sshd_config
+  register: base_sshd_config
+
+- name: Les fichiers de sshd_config.d sont pris en compte
+  ansible.builtin.assert:
+    that: (base_sshd_config.content | b64decode) is search('(?m)^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf')
+    fail_msg: "/etc/ssh/sshd_config n'inclut pas sshd_config.d/*.conf : durcissement SSH impossible sur cette distribution"
+    quiet: true
+
+# sshd -t (validation ci-dessous) exige ce dossier, créé d'ordinaire par le
+# service ; il peut manquer si sshd n'a pas encore démarré (activation par socket).
+- name: Dossier de séparation des privilèges de sshd
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    mode: "0755"
+
+# Premier fichier lu par sshd : ses valeurs l'emportent sur celles des suivants
+# (ex. 50-cloud-init.conf qui réactive parfois les mots de passe).
+- name: Durcissement SSH
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-infra-base.conf
+    mode: "0644"
+    content: |
+      # Géré par Ansible (infra_mcp.core.base) — ne pas modifier à la main.
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Recharger SSH

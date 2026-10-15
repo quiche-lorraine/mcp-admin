@@ -1,0 +1,12 @@
+# Socle de tout le parc : rôle base partout, Docker là où il est géré.
+# `plan site` sert aussi de détection de dérive.
+- name: Configuration de base
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Noms des variables vault
+      ansible.builtin.import_tasks: tasks/vault-names.yml
+  roles:
+    - infra_mcp.core.base
+    - role: infra_mcp.core.docker
+      when: docker_engine_managed | default(true)

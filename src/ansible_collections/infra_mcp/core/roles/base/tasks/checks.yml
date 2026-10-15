@@ -2,12 +2,14 @@
 # échoue ici, avant le moindre changement, si la configuration est dangereuse.
 # tests/test_base_checks.py exécute ce fichier tel quel.
 
-- name: Vérifie les valeurs verrouillées (policy/locked.yml)
+# Verrous du socle (vars/main.yml), complétés par ceux du repo de config
+# (locked_vars) ; en cas de doublon, ceux du socle l'emportent.
+- name: Vérifie les valeurs verrouillées
   ansible.builtin.assert:
     that: lookup('ansible.builtin.vars', item.key) == item.value
     fail_msg: "{{ item.key }} est verrouillée à « {{ item.value }} » : surcharge interdite"
     quiet: true
-  loop: "{{ locked_vars | default({}) | dict2items }}"
+  loop: "{{ locked_vars | default({}) | combine(base_locked_vars) | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
 
@@ -67,6 +69,18 @@
     fail_msg: >-
       {{ ansible_user }} est le compte qu'utilise Ansible : il doit rester dans
       admin_users_* avec sudo: true, sinon le prochain apply n'aurait plus les droits root.
+    quiet: true
+
+# SSH n'accepte plus root ni les mots de passe (ssh.yml) : il faut un admin
+# capable de prendre le relais, avec sudo et au moins une clé.
+- name: Au moins un admin avec sudo et une clé SSH
+  ansible.builtin.assert:
+    that: >-
+      base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo')
+      | selectattr('ssh_keys', 'defined') | rejectattr('ssh_keys', 'equalto', []) | list | length > 0
+    fail_msg: >-
+      admin_users_* doit contenir au moins un compte avec sudo: true et une clé SSH :
+      la connexion root et par mot de passe est désactivée par le socle.
     quiet: true
 
 # 22 est toujours protégé en plus de ansible_port : le port réel peut venir du

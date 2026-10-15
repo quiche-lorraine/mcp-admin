@@ -1,0 +1,12 @@
+# --- Mises à jour de sécurité automatiques -------------------------------------
+
+- name: Configure unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52infra
+    mode: "0644"
+    content: |
+      // Géré par Ansible (rôle base) — ne pas modifier à la main.
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "{{ updates_auto_reboot | bool | lower }}";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ updates_reboot_time }}";
