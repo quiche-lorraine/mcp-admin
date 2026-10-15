@@ -49,31 +49,37 @@
   loop_control:
     label: "{{ item.name }}"
 
+# Les fichiers sudo créés par ce rôle portent un marqueur : tout fichier marqué
+# qui ne correspond plus à un admin avec sudo: true est supprimé. Les fichiers
+# posés par d'autres outils (ex. 90-cloud-init-users) ne sont jamais touchés.
 - name: Sudo pour les admins concernés
   ansible.builtin.copy:
     dest: "/etc/sudoers.d/90-{{ item.name }}"
     mode: "0440"
-    content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+    content: |
+      # ansible-managed: role base
+      {{ item.name }} ALL=(ALL) NOPASSWD:ALL
     validate: "visudo -cf %s"
   loop: "{{ base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
   loop_control:
     label: "{{ item.name }}"
 
-# Retirer un compte de admin_users_* ne le supprime pas : il faut le lister dans
-# users_absent_*. Le dossier personnel est conservé. La suppression échoue si le
-# compte a encore des processus en cours (session ouverte, cron…).
-- name: Sudo des comptes retirés
-  ansible.builtin.file:
-    path: "/etc/sudoers.d/90-{{ item }}"
-    state: absent
-  loop: "{{ base_users_absent }}"
+- name: Fichiers sudo gérés par ce rôle
+  ansible.builtin.find:
+    paths: /etc/sudoers.d
+    patterns: "90-*"
+    contains: "^# ansible-managed: role base$"
+  register: base_sudoers_found
 
-- name: Comptes retirés
-  ansible.builtin.user:
-    name: "{{ item }}"
+- name: Sudo retiré aux comptes qui n'y ont plus droit
+  ansible.builtin.file:
+    path: "{{ item }}"
     state: absent
-    remove: false
-  loop: "{{ base_users_absent }}"
+  loop: "{{ base_sudoers_found.files | map(attribute='path') | difference(_expected) | sort }}"
+  vars:
+    _expected: >-
+      {{ base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo')
+         | map(attribute='name') | map('regex_replace', '^', '/etc/sudoers.d/90-') }}
 
 # --- Firewall -----------------------------------------------------------------
 # Ordre important : les règles d'autorisation (SSH compris) AVANT d'activer ufw,
@@ -112,3 +118,45 @@
     state: enabled
     direction: incoming
     default: "{{ firewall_default_incoming }}"
+
+# --- Comptes retirés -------------------------------------------------------------
+# En dernier : si la suppression échoue (processus encore actifs), tout le reste
+# du rôle, firewall compris, a déjà été appliqué.
+
+- name: Comptes existants
+  ansible.builtin.getent:
+    database: passwd
+  when: base_users_absent | length > 0
+
+- name: Dossier personnel des comptes retirés
+  ansible.builtin.stat:
+    path: "{{ ansible_facts.getent_passwd[item][4] }}"
+  loop: "{{ base_users_absent | select('in', ansible_facts.getent_passwd | default({})) }}"
+  register: base_users_absent_homes
+
+# Le dossier est conservé, mais réservé à root : sinon le prochain compte créé,
+# qui peut recevoir le même UID, en hériterait (.ssh, historique…). Seuls les
+# dossiers sous /home sont concernés : certains comptes système ont / ou /bin.
+- name: Dossier personnel réservé à root
+  ansible.builtin.file:
+    path: "{{ item.stat.path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ base_users_absent_homes.results | default([]) | selectattr('stat.exists') | selectattr('stat.isdir') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.path is match('^/home/[^/]+$')
+
+- name: Sudo des comptes retirés
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/90-{{ item }}"
+    state: absent
+  loop: "{{ base_users_absent }}"
+
+- name: Comptes retirés
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: false
+  loop: "{{ base_users_absent }}"

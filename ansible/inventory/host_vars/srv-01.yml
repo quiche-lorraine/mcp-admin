@@ -12,3 +12,7 @@ firewall_allow_host:
   # ce trafic est bloqué sans cette règle. Vérifie le sous-réseau avec :
   #   docker network inspect coolify -f '{{ (index .IPAM.Config 0).Subnet }}'
   - { port: "8765", proto: tcp, src: "10.0.1.0/24" }
+
+# Redémarre après le reste du parc (managers 04:00, workers 04:30) : Coolify,
+# Traefik et le contrôleur infra-mcp ne tombent pas en même temps que le swarm.
+updates_reboot_time: "05:00"

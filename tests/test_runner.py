@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -103,9 +104,21 @@ def test_truncate_garde_la_fin(monkeypatch):
     assert "15 caractères tronqués" in out
 
 
-async def test_run_timeout_tue_le_processus():
+async def test_run_timeout_tue_tout_le_groupe(tmp_path):
+    # Comme ansible-playbook, le processus lance un enfant (worker, ssh…) qui
+    # doit mourir avec lui.
+    pidfile = tmp_path / "enfant.pid"
     with pytest.raises(ToolError, match="délai dépassé"):
-        await runner.run("sleep", "30", timeout=0.2)
+        await runner.run("sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait", timeout=0.5)
+    child = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("le processus enfant a survécu au délai dépassé")
 
 
 async def test_un_seul_apply_a_la_fois(monkeypatch):
