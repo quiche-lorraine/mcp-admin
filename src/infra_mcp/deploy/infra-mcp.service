@@ -6,10 +6,12 @@ Wants=network-online.target
 [Service]
 User=infra-mcp
 Group=infra-mcp
-# IP de la passerelle du réseau Docker du reverse proxy : joignable par lui,
-# pas depuis Internet. À vérifier avec :
+# Écoute locale par défaut. Les réglages propres à la machine vont dans
+# /etc/infra-mcp/infra-mcp.env (créé par infra-mcp-admin), qui l'emporte : par
+# exemple INFRA_MCP_HOST=<passerelle du réseau Docker du reverse proxy>, joignable
+# par lui mais pas depuis Internet :
 #   docker network inspect <réseau du proxy> -f '{{ (index .IPAM.Config 0).Gateway }}'
-Environment=INFRA_MCP_HOST=10.0.1.1
+Environment=INFRA_MCP_HOST=127.0.0.1
 Environment=INFRA_MCP_PORT=8765
 Environment=INFRA_MCP_ANSIBLE_DIR=/opt/infra
 Environment=INFRA_MCP_TOKENS=/etc/infra-mcp/tokens.json
@@ -17,6 +19,7 @@ Environment=INFRA_MCP_AUDIT_LOG=/var/log/infra-mcp/audit.jsonl
 # Mot de passe ansible-vault (0400, propriétaire infra-mcp). Ansible déchiffre
 # les secrets au moment d'exécuter ; host_vars masque les variables vault_*.
 Environment=ANSIBLE_VAULT_PASSWORD_FILE=/etc/infra-mcp/vault-pass
+EnvironmentFile=-/etc/infra-mcp/infra-mcp.env
 ExecStart=/opt/infra-mcp/venv/bin/infra-mcp serve
 Restart=on-failure
 

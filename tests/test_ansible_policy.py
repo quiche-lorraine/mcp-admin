@@ -80,6 +80,7 @@ ATTACKS = [
     ("playbooks/x.yml", "- hosts: all\n  tasks:\n    - ansible.builtin.slurp: {src: a}\n      delegate_to: localhost\n",
      False, "delegate_to : interdit"),
     ("playbooks/x.yml", "- hosts: localhost\n  tasks: []\n", False, "hosts: localhost : interdit"),
+    ("playbooks/x.yml", "- hosts: [srv-01, 127.0.0.1]\n  tasks: []\n", False, "hosts: localhost : interdit"),
     ("playbooks/x.yml", "- hosts: all\n  connection: local\n  tasks: []\n", False, "connection : interdit"),
     ("playbooks/x.yml", "- hosts: all\n  tasks:\n    - ansible.builtin.copy: {src: /etc/infra-mcp/vault-pass, dest: /tmp/x}\n",
      False, "src: /etc/infra-mcp/vault-pass : chemin hors du repo interdit"),
@@ -125,6 +126,8 @@ def test_attaque_refusee(tmp_path, path, content, executable, expected):
         ("inventory/host_vars/srv-02.yml", "ansible_python_interpreter: /usr/bin/python3\nansible_host: 192.0.2.1\n"),
         ("playbooks/x.yml", "- hosts: all\n  tasks:\n    - ansible.builtin.debug: {msg: \"{{ query('ansible.builtin.varnames', '^a') }}\"}\n"),
         ("inventory/group_vars/all.yml", "firewall_allow_global:\n  - {port: \"80\", proto: tcp, src: 10.0.0.0/8}\n"),
+        # Une machine d'inventaire à l'adresse 127.0.0.1 (contrôleur qui se gère lui-même)
+        ("inventory/hosts.yml", "all:\n  hosts:\n    ctl:\n      ansible_host: 127.0.0.1\n"),
     ],
 )
 def test_donnees_legitimes_acceptees(tmp_path, path, content):

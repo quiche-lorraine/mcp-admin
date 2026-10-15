@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# infra-mcp-admin : installe et met à jour le contrôleur infra-mcp, ajoute des
+# machines au parc. À lancer en root sur le contrôleur. Chaque commande peut être
+# relancée : elle ne refait que ce qui manque.
+#
+#   infra-mcp-admin install --repo <url du repo de config> [--tool <spec pip>]
+#   infra-mcp-admin update [--tool <spec pip>]
+#   infra-mcp-admin add-host <hôte> [--bootstrap-user root]
+#   infra-mcp-admin cloud-init <hôte>
+#
+# --tool remplace la version de l'outil figée par le repo de config
+# (requirements.txt) : réservé aux tests d'une version de développement.
+
+set -euo pipefail
+
+SERVICE_USER=infra-mcp
+SERVICE_HOME=/var/lib/infra-mcp
+VENV=/opt/infra-mcp/venv
+REPO_DIR=/opt/infra
+ETC_DIR=/etc/infra-mcp
+LOG_DIR=/var/log/infra-mcp
+VAULT_PASS=$ETC_DIR/vault-pass
+ENV_FILE=$ETC_DIR/infra-mcp.env
+FLEET_KEY=$SERVICE_HOME/.ssh/id_ed25519
+DEPLOY_KEY=$SERVICE_HOME/.ssh/github_deploy
+KNOWN_HOSTS=$SERVICE_HOME/.ssh/known_hosts
+SELF=/usr/local/sbin/infra-mcp-admin
+# Empreinte publiée par GitHub pour sa clé d'hôte ed25519.
+GITHUB_FP="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+
+say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+info() { printf '    %s\n' "$*"; }
+warn() { printf '\033[33m[!] %s\033[0m\n' "$*" >&2; }
+die() { printf '\033[31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
+confirm() {
+    local answer
+    read -r -p "    $1 [o/N] " answer || answer=
+    [[ $answer =~ ^[oOyY]$ ]]
+}
+has_systemd() { [[ -d /run/systemd/system ]]; }
+
+# Commande lancée en tant que compte de service, dans le repo de config.
+as_service() {
+    local env=(HOME="$SERVICE_HOME" ANSIBLE_NOCOLOR=1)
+    [[ -s $VAULT_PASS ]] && env+=(ANSIBLE_VAULT_PASSWORD_FILE="$VAULT_PASS")
+    (cd "$REPO_DIR" && runuser -u "$SERVICE_USER" -- env "${env[@]}" "$@")
+}
+ansible_bin() { echo "$VENV/bin/$1"; }
+
+# --- Étapes -----------------------------------------------------------------------
+
+step_packages() {
+    say "Paquets du système"
+    local missing=()
+    command -v git >/dev/null || missing+=(git)
+    command -v ssh-keyscan >/dev/null || missing+=(openssh-client)
+    command -v curl >/dev/null || missing+=(curl)
+    python3 -c 'import ensurepip, venv' 2>/dev/null || missing+=(python3-venv)
+    if ((${#missing[@]})); then
+        apt-get update -qq && apt-get install -y -qq "${missing[@]}"
+    fi
+    info "git, ssh, curl et python3-venv présents"
+}
+
+step_user() {
+    say "Compte de service $SERVICE_USER"
+    if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+        useradd --system --create-home --home-dir "$SERVICE_HOME" --shell /usr/sbin/nologin "$SERVICE_USER"
+        info "créé"
+    fi
+    install -d -m 700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$SERVICE_HOME/.ssh"
+    install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$ETC_DIR" "$LOG_DIR" "$REPO_DIR"
+    install -d -m 755 "$(dirname "$VENV")"
+    touch "$KNOWN_HOSTS" && chown "$SERVICE_USER:" "$KNOWN_HOSTS" && chmod 600 "$KNOWN_HOSTS"
+    if [[ ! -f $FLEET_KEY ]]; then
+        runuser -u "$SERVICE_USER" -- ssh-keygen -q -t ed25519 -N "" -C "infra-mcp@$(hostname)" -f "$FLEET_KEY"
+        info "clé SSH du parc créée"
+    fi
+}
+
+# Ajoute la clé d'hôte d'une machine au known_hosts, après vérification humaine
+# de l'empreinte (ou comparaison à une empreinte connue). Renvoie 1 si refusée.
+trust_host() {
+    local name=$1 addr=$2 port=${3:-22} expected=${4:-}
+    local target=$addr
+    [[ $port != 22 ]] && target="[$addr]:$port"
+    if runuser -u "$SERVICE_USER" -- ssh-keygen -F "$target" -f "$KNOWN_HOSTS" >/dev/null; then
+        info "$name ($target) : déjà connu"
+        return 0
+    fi
+    local scanned
+    scanned=$(ssh-keyscan -T 5 -p "$port" -t ed25519 "$addr" 2>/dev/null) || true
+    if [[ -z $scanned ]]; then
+        warn "$name ($target) : injoignable, clé d'hôte non ajoutée"
+        return 1
+    fi
+    local fp
+    fp=$(ssh-keygen -lf - <<<"$scanned" | awk '{print $2}')
+    if [[ -n $expected ]]; then
+        [[ $fp == "$expected" ]] || die "$name : empreinte $fp différente de l'empreinte attendue $expected"
+    else
+        info "$name ($target) : empreinte ED25519 $fp"
+        info "Compare-la à celle de la console de l'hébergeur : ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
+        if ! confirm "L'empreinte est-elle la bonne ?"; then
+            warn "$name : clé refusée, rien n'est ajouté"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$scanned" >>"$KNOWN_HOSTS"
+    info "$name : clé ajoutée"
+}
+
+step_repo() {
+    say "Repo de config ($REPO_DIR)"
+    if [[ -d $REPO_DIR/.git ]]; then
+        as_service git pull --ff-only --quiet && info "à jour : $(as_service git log -1 --format='%h %s')"
+        return
+    fi
+    [[ -n ${REPO:-} ]] || die "première installation : --repo <url du repo de config> obligatoire"
+    if [[ $REPO == git@github.com:* ]]; then
+        # Clé dédiée au repo (deploy key en lecture seule), distincte de celle du parc.
+        if [[ ! -f $DEPLOY_KEY ]]; then
+            runuser -u "$SERVICE_USER" -- ssh-keygen -q -t ed25519 -N "" -C "infra-mcp-deploy@$(hostname)" -f "$DEPLOY_KEY"
+        fi
+        local config=$SERVICE_HOME/.ssh/config
+        if ! grep -q "^Host github.com" "$config" 2>/dev/null; then
+            printf 'Host github.com\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$DEPLOY_KEY" >>"$config"
+            chown "$SERVICE_USER:" "$config" && chmod 600 "$config"
+        fi
+        trust_host github.com github.com 22 "$GITHUB_FP"
+    fi
+    local err
+    err=$(mktemp)
+    if ! runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git clone --quiet "$REPO" "$REPO_DIR" 2>"$err"; then
+        cat "$err" >&2
+        rm -f "$err"
+        if [[ $REPO == git@github.com:* ]]; then
+            warn "Accès refusé : ajoute cette clé comme deploy key en LECTURE SEULE du repo"
+            warn "(GitHub → Settings → Deploy keys), puis relance la même commande :"
+            cat "$DEPLOY_KEY.pub"
+        fi
+        exit 1
+    fi
+    rm -f "$err"
+    info "cloné : $(as_service git log -1 --format='%h %s')"
+}
+
+step_tool() {
+    say "Outil infra-mcp ($VENV)"
+    [[ -x $VENV/bin/python ]] || python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --quiet --upgrade pip
+    if [[ -n ${TOOL:-} ]]; then
+        warn "version imposée par --tool : $TOOL (et non celle de requirements.txt)"
+        "$VENV/bin/pip" install --quiet "$TOOL"
+    else
+        "$VENV/bin/pip" install --quiet -r "$REPO_DIR/requirements.txt"
+    fi
+    info "$("$VENV/bin/pip" show infra-mcp | grep -E '^Version') ; socle : $(as_service "$(ansible_bin ansible-galaxy)" collection list infra_mcp.core 2>/dev/null | awk '/infra_mcp.core/ {print $2}')"
+}
+
+# Unités systemd et ce script, depuis le paquet installé : ils suivent sa version.
+step_files() {
+    say "Unités systemd et infra-mcp-admin"
+    local src
+    src=$("$VENV/bin/python" -c 'import infra_mcp, pathlib; print(pathlib.Path(infra_mcp.__file__).parent / "deploy")')
+    install -m 755 "$src/infra-mcp-admin" "$SELF"
+    if [[ ! -f $ENV_FILE ]]; then
+        cat >"$ENV_FILE" <<'EOF'
+# Réglages propres à ce contrôleur (prioritaires sur l'unité infra-mcp.service).
+# Écoute : par défaut en local. Derrière un reverse proxy en conteneur, mettre
+# l'IP de la passerelle de son réseau Docker, joignable par lui, pas par Internet.
+#INFRA_MCP_HOST=10.0.1.1
+#INFRA_MCP_PORT=8765
+#INFRA_MCP_MAX_PLANS=2
+EOF
+        chmod 644 "$ENV_FILE"
+    fi
+    if has_systemd; then
+        install -m 644 "$src"/infra-mcp.service "$src"/infra-mcp-sync.service "$src"/infra-mcp-sync.timer /etc/systemd/system/
+        systemctl daemon-reload
+        info "installées dans /etc/systemd/system"
+    else
+        warn "systemd absent : unités non installées (conteneur ?)"
+    fi
+}
+
+step_vault() {
+    say "Mot de passe ansible-vault"
+    if [[ -s $VAULT_PASS ]]; then
+        info "déjà en place"
+        return
+    fi
+    local pass=""
+    read -r -s -p "    Mot de passe vault (vide : plus tard) : " pass || true
+    echo
+    if [[ -z $pass ]]; then
+        warn "aucun mot de passe : à faire avant d'utiliser des secrets (relancer install)"
+        return
+    fi
+    printf '%s\n' "$pass" | install -m 400 -o "$SERVICE_USER" -g "$SERVICE_USER" /dev/stdin "$VAULT_PASS"
+    unset pass
+    info "enregistré dans $VAULT_PASS (lisible par $SERVICE_USER seulement)"
+}
+
+# Toutes les machines de l'inventaire : nom, adresse, port.
+inventory_hosts() {
+    as_service "$(ansible_bin ansible-inventory)" --list | "$VENV/bin/python" -c '
+import json, sys
+for host, hv in sorted(json.load(sys.stdin)["_meta"]["hostvars"].items()):
+    print(host, hv.get("ansible_host", host), hv.get("ansible_port", 22))'
+}
+
+step_known_hosts() {
+    say "Clés d'hôte du parc"
+    # Liste lue d'abord : l'entrée standard reste libre pour les confirmations.
+    local hosts line
+    mapfile -t hosts < <(inventory_hosts)
+    for line in "${hosts[@]}"; do
+        # shellcheck disable=SC2086
+        trust_host $line || true
+    done
+}
+
+step_services() {
+    say "Services"
+    if ! has_systemd; then
+        warn "systemd absent : services non démarrés"
+        return
+    fi
+    systemctl enable --quiet infra-mcp.service infra-mcp-sync.timer
+    systemctl restart infra-mcp.service
+    systemctl start infra-mcp-sync.timer
+    info "infra-mcp : $(systemctl is-active infra-mcp.service), synchronisation : $(systemctl is-active infra-mcp-sync.timer)"
+}
+
+step_checks() {
+    say "Vérifications"
+    local lint_out
+    if lint_out=$(as_service "$VENV/bin/infra-mcp" lint "$REPO_DIR" 2>&1); then
+        info "infra-mcp lint : ok"
+    else
+        warn "infra-mcp lint signale des problèmes dans le repo de config :"
+        while IFS= read -r line; do printf '      %s\n' "$line"; done <<<"$lint_out" >&2
+    fi
+    if has_systemd; then
+        info "durcissement : $(systemd-analyze security infra-mcp.service --no-pager 2>/dev/null | tail -1)"
+        # Sans token, le serveur doit répondre 401 : il tourne et exige l'authentification.
+        # Valeurs lues, pas exécutées : le fichier n'est pas sourcé.
+        local listen_host listen_port
+        listen_host=$(sed -n 's/^INFRA_MCP_HOST=//p' "$ENV_FILE" | tail -1)
+        listen_port=$(sed -n 's/^INFRA_MCP_PORT=//p' "$ENV_FILE" | tail -1)
+        local url="http://${listen_host:-127.0.0.1}:${listen_port:-8765}/mcp"
+        local code
+        for _ in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url" || true)
+            [[ $code == 401 ]] && break
+            sleep 2
+        done
+        if [[ $code == 401 ]]; then
+            info "serveur MCP : répond et exige un token ($url)"
+        else
+            warn "serveur MCP : réponse $code sur $url (attendu : 401)"
+        fi
+    fi
+}
+
+summary_install() {
+    say "Reste à faire"
+    info "1. Ajouter la clé publique du contrôleur dans admin_users_global (repo de config) :"
+    info "   $(cat "$FLEET_KEY.pub")"
+    info "2. Créer un token :"
+    info "   runuser -u $SERVICE_USER -- env INFRA_MCP_TOKENS=$ETC_DIR/tokens.json $VENV/bin/infra-mcp token create read <usage>"
+    info "3. Exposer le service en HTTPS derrière le reverse proxy ($ENV_FILE pour l'adresse d'écoute)."
+    info "4. Pour chaque machine : $SELF add-host <hôte>"
+}
+
+# --- Commandes --------------------------------------------------------------------
+
+cmd_install() {
+    step_packages
+    step_user
+    step_repo
+    step_tool
+    step_files
+    step_vault
+    step_known_hosts
+    step_services
+    step_checks
+    summary_install
+}
+
+cmd_update() {
+    [[ -d $REPO_DIR/.git && -x $VENV/bin/python ]] || die "contrôleur non installé : $0 install --repo <url>"
+    step_repo
+    step_tool
+    step_files
+    step_services
+    step_checks
+}
+
+# Exécute un playbook du repo : d'abord en simulation, puis pour de vrai après accord.
+run_playbook() {
+    local playbook=$1 limit=$2
+    shift 2
+    local cmd=("$(ansible_bin ansible-playbook)" "playbooks/$playbook.yml" --limit "$limit" "$@")
+    local out rc=0
+    info "simulation (plan) de $playbook sur $limit :"
+    out=$(as_service "${cmd[@]}" --check --diff 2>&1) || rc=$?
+    tail -25 <<<"$out" | sed 's/^/      /'
+    ((rc == 0)) || die "la simulation échoue : rien n'a été appliqué"
+    confirm "Appliquer $playbook sur $limit ?" || die "abandon, rien n'a été appliqué"
+    rc=0
+    out=$(as_service "${cmd[@]}" --diff 2>&1) || rc=$?
+    tail -15 <<<"$out" | sed 's/^/      /'
+    ((rc == 0)) || die "l'application de $playbook a échoué (voir ci-dessus)"
+}
+
+ping_as() {
+    as_service "$(ansible_bin ansible)" "$1" -m ansible.builtin.ping "${@:2}" >/dev/null 2>&1
+}
+
+cmd_add_host() {
+    local host=$1
+    [[ -n $host ]] || die "usage : $0 add-host <hôte> [--bootstrap-user root]"
+    [[ -d $REPO_DIR/.git ]] || die "contrôleur non installé"
+    say "Machine $host"
+    as_service "$(ansible_bin ansible-inventory)" --host "$host" >/dev/null 2>&1 \
+        || die "$host n'est pas dans l'inventaire : ajoute-le d'abord au repo de config (PR), puis attends la synchronisation"
+    local name addr port
+    read -r name addr port < <(inventory_hosts | awk -v h="$host" '$1 == h')
+    trust_host "$name" "$addr" "$port" || die "clé d'hôte non acceptée"
+
+    say "Premier passage du socle"
+    local extra=()
+    if ping_as "$host"; then
+        info "connexion avec le compte admin : ok (machine préparée par cloud-init, ou déjà passée)"
+    elif ping_as "$host" -e "ansible_user=$BOOTSTRAP_USER"; then
+        info "connexion en $BOOTSTRAP_USER : ok, le socle va créer les comptes admin puis fermer cet accès"
+        extra=(-e "ansible_user=$BOOTSTRAP_USER")
+    else
+        warn "aucune connexion possible, ni avec le compte admin ni en $BOOTSTRAP_USER."
+        warn "Crée la machine avec cette clé publique (accès $BOOTSTRAP_USER), ou avec le user-data de"
+        warn "« $0 cloud-init $host » :"
+        cat "$FLEET_KEY.pub"
+        exit 1
+    fi
+    run_playbook site "$host" "${extra[@]}"
+
+    say "Contrôle des accès"
+    ping_as "$host" || die "le compte admin ne se connecte pas : NE FERME PAS ta session sur $host, corrige admin_users_* puis relance"
+    info "compte admin : connexion ok"
+    if runuser -u "$SERVICE_USER" -- ssh -o BatchMode=yes -o ConnectTimeout=5 -o UserKnownHostsFile="$KNOWN_HOSTS" \
+        -i "$FLEET_KEY" -p "$port" "root@$addr" true 2>/dev/null; then
+        warn "root peut encore se connecter en SSH : vérifie /etc/ssh/sshd_config.d/ sur $host"
+    else
+        info "root : connexion refusée, comme attendu"
+    fi
+
+    if as_service "$(ansible_bin ansible)" swarm --list-hosts 2>/dev/null | grep -qw "$host"; then
+        say "Swarm"
+        # Toutes les machines du swarm : les autres doivent ouvrir leurs ports à la nouvelle.
+        run_playbook swarm-join swarm
+    fi
+    say "Terminé : $host est dans le parc. « plan site » sur $host ne doit plus rien changer."
+}
+
+cmd_cloud_init() {
+    local host=$1
+    [[ -n $host ]] || die "usage : $0 cloud-init <hôte>"
+    as_service env INFRA_MCP_ANSIBLE_DIR="$REPO_DIR" "$VENV/bin/infra-mcp" cloud-init "$host"
+}
+
+main() {
+    [[ $(id -u) == 0 ]] || die "à lancer en root"
+    local command_name=${1:-}
+    shift || true
+    REPO="" TOOL="" BOOTSTRAP_USER=root
+    local positional=()
+    while (($#)); do
+        case $1 in
+            --repo) REPO=$2; shift 2 ;;
+            --tool) TOOL=$2; shift 2 ;;
+            --bootstrap-user) BOOTSTRAP_USER=$2; shift 2 ;;
+            -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+            *) positional+=("$1"); shift ;;
+        esac
+    done
+    case $command_name in
+        install) cmd_install ;;
+        update) cmd_update ;;
+        add-host) cmd_add_host "${positional[0]:-}" ;;
+        cloud-init) cmd_cloud_init "${positional[0]:-}" ;;
+        *) sed -n '2,13p' "$0"; exit 1 ;;
+    esac
+}
+
+main "$@"

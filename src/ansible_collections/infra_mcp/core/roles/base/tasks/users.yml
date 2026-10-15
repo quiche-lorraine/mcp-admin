@@ -1,5 +1,9 @@
 # --- Utilisateurs admin --------------------------------------------------------
 
+- name: Comptes existants avant le passage
+  ansible.builtin.getent:
+    database: passwd
+
 - name: Utilisateurs admin
   ansible.builtin.user:
     name: "{{ item.name }}"
@@ -17,6 +21,9 @@
   loop: "{{ base_admin_users }}"
   loop_control:
     label: "{{ item.name }}"
+  # En plan, un compte seulement « à créer » n'a pas encore de dossier : le module
+  # échouerait. Sa création est déjà annoncée par la tâche précédente.
+  when: not ansible_check_mode or item.name in ansible_facts.getent_passwd
 
 # Les fichiers sudo créés par ce rôle portent un marqueur : tout fichier marqué
 # qui ne correspond plus à un admin avec sudo: true est supprimé. Les fichiers

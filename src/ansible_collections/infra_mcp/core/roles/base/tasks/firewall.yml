@@ -6,6 +6,7 @@
   ansible.builtin.apt:
     name: ufw
     state: present
+  register: base_ufw_package
 
 - name: Règles d'autorisation
   community.general.ufw:
@@ -19,6 +20,9 @@
 
 # Retirer une entrée de firewall_allow_* ne ferme pas le port : il faut la
 # lister dans firewall_remove_*, avec la même source (src) que la règle d'origine.
+  # En plan, ufw seulement « à installer » (Debian) n'a pas encore de binaire.
+  when: not (ansible_check_mode and base_ufw_package is changed)
+
 - name: Règles retirées
   community.general.ufw:
     rule: allow
@@ -29,9 +33,13 @@
   loop: "{{ base_firewall_remove }}"
   loop_control:
     label: "{{ item.port }}/{{ item.proto }}"
+  # En plan, ufw seulement « à installer » (Debian) n'a pas encore de binaire.
+  when: not (ansible_check_mode and base_ufw_package is changed)
 
 - name: Politique entrante par défaut et activation
   community.general.ufw:
     state: enabled
     direction: incoming
     default: "{{ firewall_default_incoming }}"
+  # En plan, ufw seulement « à installer » (Debian) n'a pas encore de binaire.
+  when: not (ansible_check_mode and base_ufw_package is changed)

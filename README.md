@@ -169,46 +169,71 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 
 ## Installation sur le contrôleur
 
+Tout passe par `infra-mcp-admin`, livré avec l'outil. À lancer en root ; chaque
+commande peut être relancée, elle ne refait que ce qui manque.
+
 ```bash
-# Utilisateur dédié, avec sa clé SSH vers le parc
-sudo useradd --system --create-home --home-dir /var/lib/infra-mcp --shell /usr/sbin/nologin infra-mcp
-sudo install -d -m 700 -o infra-mcp -g infra-mcp /var/lib/infra-mcp/.ssh
-sudo -u infra-mcp ssh-keygen -t ed25519 -N "" -f /var/lib/infra-mcp/.ssh/id_ed25519
-# → ajoute la clé publique dans admin_users_global (group_vars/all.yml)
-
-# Clés d'hôte du parc (host_key_checking est actif : sans elles, Ansible refuse
-# de se connecter). Compare les empreintes affichées avec celles de chaque
-# serveur (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub, depuis la console
-# de l'hébergeur) avant de les accepter.
-ssh-keyscan -t ed25519 203.0.113.10 203.0.113.11 203.0.113.12 > /tmp/known_hosts
-ssh-keygen -lf /tmp/known_hosts
-sudo install -m 644 -o infra-mcp -g infra-mcp /tmp/known_hosts /var/lib/infra-mcp/.ssh/known_hosts
-# Pour un hôte ajouté plus tard : même chose, en ajoutant (>>) au fichier existant.
-
-# Code et repo
-sudo mkdir -p /opt/infra-mcp /opt/infra /etc/infra-mcp /var/log/infra-mcp
-sudo chown infra-mcp: /opt/infra /etc/infra-mcp /var/log/infra-mcp
-# Repo de config (clé de déploiement en lecture seule s'il est privé)
-sudo -u infra-mcp git clone git@github.com:quiche-lorraine/infra.git /opt/infra
-sudo python3 -m venv /opt/infra-mcp/venv
-# L'outil à la version figée par le repo de config (socle et ansible compris)
-sudo /opt/infra-mcp/venv/bin/pip install -r /opt/infra/requirements.txt
-
-# Mot de passe ansible-vault (le même que sur ton poste, à garder dans ton
-# gestionnaire de mots de passe). Saisi sans écho ni historique, lisible par
-# le service seulement.
-read -rsp 'Mot de passe vault : ' P && printf '%s\n' "$P" \
-  | sudo install -m 400 -o infra-mcp -g infra-mcp /dev/stdin /etc/infra-mcp/vault-pass; unset P
-
-# Services
-sudo cp deploy/infra-mcp*.service deploy/infra-mcp-sync.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now infra-mcp infra-mcp-sync.timer
+# Première fois : le script, à la version figée par le repo de config
+# (le commit de son requirements.txt). Lis-le avant de l'exécuter.
+curl -fsSLo infra-mcp-admin \
+  https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/<commit>/src/infra_mcp/deploy/infra-mcp-admin
+sudo bash infra-mcp-admin install --repo git@github.com:quiche-lorraine/infra.git
 ```
 
-Puis expose le service en HTTPS derrière ton reverse proxy :
-`deploy/traefik-infra-mcp.yml` est une configuration dynamique Traefik prête à
-adapter.
+`install` :
+1. crée le compte `infra-mcp`, ses dossiers et sa clé SSH vers le parc ;
+2. clone le repo de config dans `/opt/infra`. S'il est privé, une clé dédiée
+   (distincte de celle du parc) est créée : le script l'affiche, ajoute-la en
+   *deploy key* **en lecture seule** sur GitHub, puis relance la commande. La clé
+   d'hôte de GitHub est vérifiée contre son empreinte publiée ;
+3. installe l'outil dans `/opt/infra-mcp/venv`, à la version de
+   `requirements.txt` (socle et paquet ansible compris) ;
+4. installe les unités systemd et se copie dans `/usr/local/sbin`, depuis le
+   paquet installé : tout suit la même version ;
+5. demande le mot de passe vault (sans écho), s'il n'est pas déjà en place ;
+6. récupère les clés d'hôte du parc et **demande de confirmer chaque
+   empreinte** (à comparer avec `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+   depuis la console de l'hébergeur) ;
+7. démarre les services, puis vérifie : `infra-mcp lint`,
+   `systemd-analyze security`, et que le serveur répond 401 sans token.
+
+Il termine par ce qui reste à faire : mettre la clé publique du contrôleur dans
+`admin_users_global`, créer un token, exposer le service.
+
+Les réglages propres au contrôleur vont dans `/etc/infra-mcp/infra-mcp.env`
+(créé par `install`, jamais écrasé), par exemple l'adresse d'écoute pour un
+reverse proxy en conteneur. `deploy/traefik-infra-mcp.yml` est une
+configuration dynamique Traefik prête à adapter.
+
+**Mise à jour**, après une PR qui change `requirements.txt` dans le repo de
+config :
+
+```bash
+sudo infra-mcp-admin update
+```
+
+## Ajouter une machine
+
+1. L'ajouter à l'inventaire du repo de config (PR), et attendre la
+   synchronisation du contrôleur.
+2. La créer chez l'hébergeur, au choix :
+   - **avec cloud-init** (recommandé) : `sudo infra-mcp-admin cloud-init <hôte>`
+     produit un *user-data* à coller à la création. La machine démarre avec les
+     comptes admin, leurs clés et leur sudo, sans root ni mot de passe : elle
+     n'est jamais accessible en root ;
+   - **sinon**, avec la clé publique du contrôleur pour root.
+3. `sudo infra-mcp-admin add-host <hôte>` :
+   - vérifie que la machine est dans l'inventaire, fait confirmer l'empreinte
+     de sa clé d'hôte ;
+   - se connecte avec le compte admin (cloud-init) ou, à défaut, en root ;
+   - lance `site` en simulation, montre le résultat, puis l'applique après
+     confirmation ;
+   - vérifie que le compte admin se connecte et que root est refusé : si le
+     compte admin ne se connecte pas, il s'arrête **avant** que tu perdes
+     l'accès et dit quoi corriger ;
+   - si la machine est dans le groupe `swarm`, lance `swarm-join` sur tout le
+     swarm (les autres nœuds doivent lui ouvrir leurs ports), simulation puis
+     confirmation.
 
 ## Tokens
 
@@ -248,12 +273,9 @@ qu'elle passe.
 
 ## Limites connues
 
-- **Premier passage** : le rôle `base` crée l'utilisateur admin. Sur une machine
-  neuve, lance-le une fois à la main depuis le contrôleur, avec l'Ansible du
-  venv (qui contient le socle) :
-  `/opt/infra-mcp/venv/bin/ansible-playbook playbooks/site.yml -l <hôte> -e ansible_user=root`.
-  Après ce passage, root ne peut plus se connecter en SSH : vérifie que ta clé
-  et celle du contrôleur sont bien dans `admin_users_global`.
+- **Premier passage** : sur une machine neuve, `infra-mcp-admin add-host`
+  (voir « Ajouter une machine ») ; ensuite, root ne peut plus se connecter en
+  SSH.
 - **Check mode** : les tâches `command` / `shell` ne sont pas simulées, elles
   sont sautées par `plan`. Préfère les modules qui gèrent le check mode (`stat`,
   `slurp`, `getent`, `package_facts`…). `check_mode: false` et le lookup `pipe`
