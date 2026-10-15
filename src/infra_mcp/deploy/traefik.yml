@@ -1,0 +1,31 @@
+# Géré par infra-mcp-admin : réécrit à chaque install et update, ne pas modifier.
+# Pour exposer autre chose : un fichier de routes par service dans
+# /etc/traefik/dynamic/ (infra-mcp.yml est celui d'infra-mcp).
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# HTTPS seulement : le certificat est obtenu sur le port 443 (défi TLS-ALPN),
+# le port 80 reste fermé.
+entryPoints:
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /var/lib/traefik/acme.json
+      tlsChallenge: {}
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+# Pas d'API ni de tableau de bord. Journaux et accès dans journald.
+log:
+  level: INFO
+accessLog: {}

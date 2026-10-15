@@ -3,11 +3,13 @@
 # machines au parc. À lancer en root sur le contrôleur. Chaque commande peut être
 # relancée : elle ne refait que ce qui manque.
 #
-#   infra-mcp-admin install --repo <url du repo de config> [--tool <spec pip>]
+#   infra-mcp-admin install --repo <url du repo de config> [--domain <nom>] [--tool <spec pip>]
 #   infra-mcp-admin update [--tool <spec pip>]
 #   infra-mcp-admin add-host <hôte> [--bootstrap-user root]
 #   infra-mcp-admin cloud-init <hôte>
 #
+# install cherche un Traefik déjà en place pour y ajouter la route du serveur
+# MCP, ou propose d'en installer un (HTTPS sur --domain, Let's Encrypt).
 # --tool remplace la version de l'outil figée par le repo de config
 # (requirements.txt) : réservé aux tests d'une version de développement.
 
@@ -27,6 +29,15 @@ KNOWN_HOSTS=$SERVICE_HOME/.ssh/known_hosts
 SELF=/usr/local/sbin/infra-mcp-admin
 # Empreinte publiée par GitHub pour sa clé d'hôte ed25519.
 GITHUB_FP="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+PROXY_CONF=$ETC_DIR/proxy.conf
+TRAEFIK_BIN=/usr/local/bin/traefik
+TRAEFIK_ETC=/etc/traefik
+TRAEFIK_MARKER="# Géré par infra-mcp-admin"
+ROUTE_MARKER="# Route vers infra-mcp, écrite par infra-mcp-admin"
+TRAEFIK_VERSION=3.7.14
+# Empreintes publiées avec la version (traefik_v<version>_checksums.txt).
+TRAEFIK_SHA256_amd64=d08641f5de2dd3788097bddab1ce4b29c10a0b788566970db707fa5c94c71f15
+TRAEFIK_SHA256_arm64=e5a2d0620cecc01dbc3d8da739db0671fdc030ef1c3b2d90d54f3baaa25d85d3
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
@@ -38,6 +49,21 @@ confirm() {
     [[ $answer =~ ^[oOyY]$ ]]
 }
 has_systemd() { [[ -d /run/systemd/system ]]; }
+# Valeur d'un fichier clé=valeur, lue sans l'exécuter (jamais sourcé).
+conf_get() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1; }
+conf_set() {
+    local key=$1 value=$2 file=$3 tmp
+    tmp=$(mktemp)
+    { grep -v "^$key=" "$file" 2>/dev/null || true; printf '%s=%s\n' "$key" "$value"; } >"$tmp"
+    install -m 644 "$tmp" "$file"
+    rm -f "$tmp"
+}
+# Installe src à la place de dest s'il diffère ; code de retour 0 si dest a changé.
+install_changed() {
+    local mode=$1 src=$2 dest=$3
+    cmp -s "$src" "$dest" && return 1
+    install -m "$mode" "$src" "$dest"
+}
 
 # Commande lancée en tant que compte de service, dans le repo de config.
 as_service() {
@@ -46,6 +72,10 @@ as_service() {
     (cd "$REPO_DIR" && runuser -u "$SERVICE_USER" -- env "${env[@]}" "$@")
 }
 ansible_bin() { echo "$VENV/bin/$1"; }
+# Fichiers livrés avec le paquet installé : ils suivent sa version.
+deploy_src() { "$VENV/bin/python" -I -c 'import infra_mcp, pathlib; print(pathlib.Path(infra_mcp.__file__).parent / "deploy")'; }
+traefik_helper() { "$VENV/bin/python" -I -m infra_mcp.traefik "$@"; }
+listen_port() { local port; port=$(conf_get INFRA_MCP_PORT "$ENV_FILE"); echo "${port:-8765}"; }
 
 # --- Étapes -----------------------------------------------------------------------
 
@@ -55,11 +85,12 @@ step_packages() {
     command -v git >/dev/null || missing+=(git)
     command -v ssh-keyscan >/dev/null || missing+=(openssh-client)
     command -v curl >/dev/null || missing+=(curl)
+    command -v ss >/dev/null || missing+=(iproute2)
     python3 -c 'import ensurepip, venv' 2>/dev/null || missing+=(python3-venv)
     if ((${#missing[@]})); then
         apt-get update -qq && apt-get install -y -qq "${missing[@]}"
     fi
-    info "git, ssh, curl et python3-venv présents"
+    info "git, ssh, curl, ss et python3-venv présents"
 }
 
 step_user() {
@@ -162,7 +193,7 @@ step_tool() {
 step_files() {
     say "Unités systemd et infra-mcp-admin"
     local src
-    src=$("$VENV/bin/python" -c 'import infra_mcp, pathlib; print(pathlib.Path(infra_mcp.__file__).parent / "deploy")')
+    src=$(deploy_src)
     install -m 755 "$src/infra-mcp-admin" "$SELF"
     if [[ ! -f $ENV_FILE ]]; then
         cat >"$ENV_FILE" <<'EOF'
@@ -246,10 +277,9 @@ step_checks() {
         info "durcissement : $(systemd-analyze security infra-mcp.service --no-pager 2>/dev/null | tail -1)"
         # Sans token, le serveur doit répondre 401 : il tourne et exige l'authentification.
         # Valeurs lues, pas exécutées : le fichier n'est pas sourcé.
-        local listen_host listen_port
-        listen_host=$(sed -n 's/^INFRA_MCP_HOST=//p' "$ENV_FILE" | tail -1)
-        listen_port=$(sed -n 's/^INFRA_MCP_PORT=//p' "$ENV_FILE" | tail -1)
-        local url="http://${listen_host:-127.0.0.1}:${listen_port:-8765}/mcp"
+        local listen_host url
+        listen_host=$(conf_get INFRA_MCP_HOST "$ENV_FILE")
+        url="http://${listen_host:-127.0.0.1}:$(listen_port)/mcp"
         local code
         for _ in 1 2 3 4 5; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url" || true)
@@ -262,6 +292,38 @@ step_checks() {
             warn "serveur MCP : réponse $code sur $url (attendu : 401)"
         fi
     fi
+    check_proxy
+}
+
+# La route HTTPS, testée en local (le DNS n'est pas forcément en place).
+check_proxy() {
+    local domain code
+    domain=$(conf_get DOMAIN "$PROXY_CONF")
+    [[ -n $domain ]] || return 0
+    # Directement en local, même si un proxy sortant est configuré.
+    local url="https://$domain/mcp" via=(--noproxy '*' --resolve "$domain:443:127.0.0.1")
+    for _ in 1 2 3 4 5; do
+        code=$(curl -sk -o /dev/null -w '%{http_code}' "${via[@]}" -X POST "$url" || true)
+        [[ $code == 401 ]] && break
+        sleep 2
+    done
+    if [[ $code != 401 ]]; then
+        warn "HTTPS : réponse $code sur $url en local (attendu : 401)"
+        return
+    fi
+    info "HTTPS : $url répond et exige un token"
+    # Le premier certificat Let's Encrypt prend quelques secondes.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -s -o /dev/null "${via[@]}" -X POST "$url"; then
+            info "HTTPS : certificat valide"
+            return
+        fi
+        sleep 3
+    done
+    warn "HTTPS : certificat pas encore valide. Il faut que $domain pointe vers cette machine et que le port 443 soit ouvert"
+    if traefik_is_ours; then
+        warn "puis : systemctl restart traefik"
+    fi
 }
 
 summary_install() {
@@ -270,8 +332,296 @@ summary_install() {
     info "   $(cat "$FLEET_KEY.pub")"
     info "2. Créer un token :"
     info "   runuser -u $SERVICE_USER -- env INFRA_MCP_TOKENS=$ETC_DIR/tokens.json $VENV/bin/infra-mcp token create read <usage>"
-    info "3. Exposer le service en HTTPS derrière le reverse proxy ($ENV_FILE pour l'adresse d'écoute)."
+    local domain
+    domain=$(conf_get DOMAIN "$PROXY_CONF")
+    if [[ -n $domain ]]; then
+        info "3. Brancher Claude Code :"
+        info "   claude mcp add --transport http infra https://$domain/mcp --header \"Authorization: Bearer <token>\""
+    else
+        info "3. Exposer le service en HTTPS derrière un reverse proxy (relancer install pour installer Traefik)."
+    fi
     info "4. Pour chaque machine : $SELF add-host <hôte>"
+}
+
+# --- Reverse proxy ----------------------------------------------------------------
+# Un seul cas où le script installe et gère Traefik : rien n'écoute déjà sur le
+# port 443. Un Traefik existant (conteneur ou machine) reçoit seulement la route,
+# après accord, sinon elle est préparée pour être ajoutée à la main.
+
+traefik_is_ours() { [[ $(head -1 "$TRAEFIK_ETC/traefik.yml" 2>/dev/null) == "$TRAEFIK_MARKER"* ]]; }
+ufw_active() { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; }
+
+# TRAEFIK_KIND : ours, docker (TRAEFIK_REF = conteneur), process (pid) ou vide.
+detect_traefik() {
+    TRAEFIK_KIND="" TRAEFIK_REF=""
+    if traefik_is_ours; then
+        TRAEFIK_KIND=ours
+        return
+    fi
+    if command -v docker >/dev/null; then
+        TRAEFIK_REF=$(docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null \
+            | awk '$2 ~ /(^|\/)traefik(:|@|$)/ {print $1; exit}') || true
+        if [[ -n $TRAEFIK_REF ]]; then
+            TRAEFIK_KIND=docker
+            return
+        fi
+    fi
+    TRAEFIK_REF=$(pgrep -x traefik | head -1) || true
+    # Ignoré s'il vient de s'arrêter.
+    if [[ -n $TRAEFIK_REF ]] && readlink "/proc/$TRAEFIK_REF/ns/mnt" >/dev/null 2>&1; then
+        TRAEFIK_KIND=process
+    fi
+}
+
+# Lignes clé=valeur du module infra_mcp.traefik -> tableau FACTS, sans évaluation.
+declare -A FACTS=()
+read_facts() {
+    FACTS=()
+    local key value
+    while IFS='=' read -r key value; do
+        if [[ $key =~ ^[a-z_]+$ ]]; then
+            FACTS[$key]=$value
+        fi
+    done
+}
+
+ask_domain() {
+    local domain=${DOMAIN:-$(conf_get DOMAIN "$PROXY_CONF")}
+    if [[ -z $domain ]]; then
+        read -r -p "    Nom de domaine du serveur MCP (ex. mcp.exemple.fr, vide : plus tard) : " domain || domain=
+    fi
+    domain=${domain,,}
+    [[ -n $domain ]] || return 1
+    traefik_helper check-domain "$domain" || die "nom de domaine invalide : $domain"
+    DOMAIN=$domain
+    conf_set DOMAIN "$domain" "$PROXY_CONF"
+}
+
+check_dns() {
+    local resolved local_ips ip
+    resolved=$(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u) || true
+    if [[ -z $resolved ]]; then
+        warn "$DOMAIN ne résout pas encore : le certificat sera obtenu une fois le DNS en place"
+        return
+    fi
+    local_ips=" $(hostname -I 2>/dev/null) "
+    for ip in $resolved; do
+        if [[ $local_ips == *" $ip "* ]]; then
+            info "$DOMAIN -> $ip (cette machine)"
+            return
+        fi
+    done
+    warn "$DOMAIN -> $(echo "$resolved" | tr '\n' ' ')ne correspond à aucune adresse de cette machine :"
+    warn "normal derrière une IP flottante ou du NAT, sinon corrige le DNS."
+}
+
+# Écrit la route <fichier> vers infra-mcp, joint à l'adresse <hôte>.
+write_route() {
+    local dest=$1 backend_host=$2 entrypoint=${3:-} resolver=${4:-} tmp
+    tmp=$(mktemp)
+    if ! traefik_helper route "$DOMAIN" "http://$backend_host:$(listen_port)" \
+        --entrypoint "$entrypoint" --resolver "$resolver" >"$tmp"; then
+        rm -f "$tmp"
+        die "route Traefik impossible à générer"
+    fi
+    install -d -m 755 "$(dirname "$dest")"
+    if install_changed 644 "$tmp" "$dest"; then
+        info "route écrite : $dest"
+    else
+        info "route déjà à jour : $dest"
+    fi
+    rm -f "$tmp"
+}
+
+install_traefik() {
+    local arch sha
+    case $(uname -m) in
+        x86_64) arch=amd64 sha=$TRAEFIK_SHA256_amd64 ;;
+        aarch64 | arm64) arch=arm64 sha=$TRAEFIK_SHA256_arm64 ;;
+        *) die "Traefik : architecture $(uname -m) non prise en charge par ce script" ;;
+    esac
+    local changed=0 current
+    current=$("$TRAEFIK_BIN" version 2>/dev/null | awk '/^Version:/ {print $2}') || true
+    if [[ $current != "$TRAEFIK_VERSION" ]]; then
+        local tmp tarball=traefik_v${TRAEFIK_VERSION}_linux_$arch.tar.gz
+        tmp=$(mktemp -d)
+        if ! curl -fsSL -o "$tmp/$tarball" "https://github.com/traefik/traefik/releases/download/v$TRAEFIK_VERSION/$tarball"; then
+            rm -rf "$tmp"
+            die "Traefik : téléchargement impossible"
+        fi
+        if ! sha256sum --quiet -c - <<<"$sha  $tmp/$tarball"; then
+            rm -rf "$tmp"
+            die "Traefik : empreinte incorrecte, archive rejetée"
+        fi
+        tar -xzf "$tmp/$tarball" -C "$tmp" traefik
+        install -m 755 "$tmp/traefik" "$TRAEFIK_BIN"
+        rm -rf "$tmp"
+        info "Traefik $TRAEFIK_VERSION installé${current:+ (remplace $current)}"
+        changed=1
+    fi
+    local src
+    src=$(deploy_src)
+    install -d -m 755 "$TRAEFIK_ETC" "$TRAEFIK_ETC/dynamic"
+    install_changed 644 "$src/traefik.yml" "$TRAEFIK_ETC/traefik.yml" && changed=1
+    if ! has_systemd; then
+        warn "systemd absent : Traefik installé mais pas démarré"
+        return
+    fi
+    if install_changed 644 "$src/traefik.service" /etc/systemd/system/traefik.service; then
+        systemctl daemon-reload
+        changed=1
+    fi
+    systemctl enable --quiet traefik.service
+    if ((changed)) || ! systemctl is-active --quiet traefik.service; then
+        systemctl restart traefik.service
+    fi
+    info "traefik : $(systemctl is-active traefik.service)"
+}
+
+open_443() {
+    ufw_active || return 0
+    if ufw status | grep -qE '^443/tcp +ALLOW +Anywhere'; then
+        return
+    fi
+    if confirm "ufw est actif : ouvrir le port 443/tcp ?"; then
+        ufw allow 443/tcp >/dev/null
+        info "port 443 ouvert"
+        info "Si cette machine est dans l'inventaire, déclare-le aussi dans le repo de config :"
+        info "  firewall_allow_host: [{port: \"443\", proto: tcp}]"
+    else
+        warn "port 443 fermé : Traefik ne sera pas joignable, ni le certificat obtenu"
+    fi
+}
+
+# Traefik en conteneur joint la machine par la passerelle de son réseau Docker :
+# infra-mcp doit y écouter (joignable des conteneurs, pas d'Internet), et ufw
+# laisser passer ce réseau.
+listen_for_container() {
+    local gw=$1 subnet=$2 current port
+    current=$(conf_get INFRA_MCP_HOST "$ENV_FILE")
+    port=$(listen_port)
+    if [[ $current != "$gw" ]]; then
+        info "Traefik joint cette machine par $gw (passerelle de son réseau Docker) :"
+        info "infra-mcp doit écouter sur cette adresse au lieu de ${current:-127.0.0.1}."
+        info "Elle n'est joignable que depuis les conteneurs de la machine, pas depuis Internet."
+        if ! confirm "Faire écouter infra-mcp sur $gw ?"; then
+            warn "écoute inchangée : Traefik ne joindra pas infra-mcp"
+            return
+        fi
+        conf_set INFRA_MCP_HOST "$gw" "$ENV_FILE"
+        info "réglé dans $ENV_FILE"
+    fi
+    if ufw_active && [[ -n $subnet ]] && ! ufw status | grep -F "$gw $port/tcp" | grep -qF "$subnet"; then
+        if confirm "ufw est actif : autoriser $subnet (réseau de Traefik) vers $gw:$port ?"; then
+            ufw allow proto tcp from "$subnet" to "$gw" port "$port" >/dev/null
+            info "règle ufw ajoutée"
+        else
+            warn "sans cette règle, ufw bloque Traefik"
+        fi
+    fi
+}
+
+# Branche infra-mcp sur un Traefik existant, décrit par FACTS.
+proxy_existing() {
+    info "configuration lue : ${FACTS[source]:-?}"
+    if ! ask_domain; then
+        warn "pas de domaine : route non écrite (relancer install)"
+        return
+    fi
+    local entrypoint=${FACTS[entrypoint]:-} resolver=${FACTS[resolver]:-} backend=${FACTS[backend_host]:-}
+    [[ -n $entrypoint ]] || warn "aucun point d'entrée sur :443 trouvé : la route n'en précise pas"
+    [[ -n $resolver ]] || warn "aucun certResolver trouvé : Traefik servira son certificat par défaut"
+    local manual=0
+    if [[ -z $backend ]]; then
+        warn "adresse de cette machine vue par Traefik introuvable (réseau overlay ?) : écoute à régler à la main"
+        warn "(INFRA_MCP_HOST dans $ENV_FILE, et l'adresse dans la route)"
+        backend=127.0.0.1 manual=1
+    elif [[ $backend != 127.0.0.1 ]]; then
+        listen_for_container "$backend" "${FACTS[client_subnet]:-}"
+    fi
+    local dir=${FACTS[file_dir]:-}
+    if ((!manual)) && [[ -n $dir && -d $dir ]]; then
+        # Déjà ajoutée lors d'une installation précédente : mise à jour sans redemander.
+        if grep -qs "^$ROUTE_MARKER" "${dir%/}/infra-mcp.yml" \
+            || confirm "Ajouter la route dans $dir (dossier surveillé par Traefik) ?"; then
+            write_route "${dir%/}/infra-mcp.yml" "$backend" "$entrypoint" "$resolver"
+            return
+        fi
+    elif [[ -n ${FACTS[file_name]:-} ]]; then
+        info "Traefik lit ses routes dans un seul fichier (${FACTS[file_name]}) : à compléter à la main"
+    elif [[ -z $dir ]]; then
+        info "Traefik ne lit aucun dossier de routes (providers.file.directory)"
+    fi
+    write_route "$ETC_DIR/traefik-infra-mcp.yml" "$backend" "$entrypoint" "$resolver"
+    info "à ajouter à la configuration dynamique de Traefik"
+}
+
+proxy_new() {
+    local busy
+    busy=$(ss -Hltnp 'sport = :443' 2>/dev/null) || true
+    if [[ -n $busy ]]; then
+        warn "pas de Traefik, mais le port 443 est déjà pris :"
+        printf '      %s\n' "$busy" >&2
+        warn "expose http://127.0.0.1:$(listen_port)/mcp en HTTPS avec ce service"
+        return
+    fi
+    if [[ -e $TRAEFIK_ETC/traefik.yml ]]; then
+        warn "$TRAEFIK_ETC/traefik.yml existe mais Traefik ne tourne pas : rien n'est installé, pour ne pas l'écraser"
+        return
+    fi
+    info "aucun reverse proxy en place"
+    if ! confirm "Installer Traefik (HTTPS, certificat Let's Encrypt, port 443 seulement) ?"; then
+        info "pas de reverse proxy : à mettre en place avant de brancher Claude Code"
+        return
+    fi
+    if ! ask_domain; then
+        warn "pas de domaine : Traefik non installé (relancer install)"
+        return
+    fi
+    check_dns
+    open_443
+    write_route "$TRAEFIK_ETC/dynamic/infra-mcp.yml" 127.0.0.1 websecure letsencrypt
+    install_traefik
+}
+
+step_proxy() {
+    say "Reverse proxy HTTPS"
+    detect_traefik
+    local facts
+    case $TRAEFIK_KIND in
+        ours)
+            ask_domain || die "domaine introuvable dans $PROXY_CONF : relancer avec --domain"
+            write_route "$TRAEFIK_ETC/dynamic/infra-mcp.yml" 127.0.0.1 websecure letsencrypt
+            install_traefik
+            ;;
+        docker)
+            info "Traefik tourne dans le conteneur $(docker inspect -f '{{.Name}}' "$TRAEFIK_REF" | tr -d /) ($TRAEFIK_REF)"
+            facts=$(docker inspect "$TRAEFIK_REF" | traefik_helper docker) || die "configuration de Traefik illisible"
+            read_facts <<<"$facts"
+            proxy_existing
+            ;;
+        process)
+            if [[ $(readlink "/proc/$TRAEFIK_REF/ns/mnt") != "$(readlink /proc/self/ns/mnt)" ]]; then
+                warn "Traefik (pid $TRAEFIK_REF) tourne dans un conteneur qui n'est pas géré par Docker :"
+                warn "expose http://127.0.0.1:$(listen_port)/mcp avec lui, à la main"
+                return
+            fi
+            info "Traefik tourne sur la machine (pid $TRAEFIK_REF)"
+            facts=$(traefik_helper process "$TRAEFIK_REF") || die "configuration de Traefik illisible"
+            read_facts <<<"$facts"
+            proxy_existing
+            ;;
+        *) proxy_new ;;
+    esac
+}
+
+# update : seulement le Traefik installé par ce script (version, configuration).
+step_proxy_update() {
+    traefik_is_ours || return 0
+    say "Traefik"
+    ask_domain || die "domaine introuvable dans $PROXY_CONF : relancer install avec --domain"
+    write_route "$TRAEFIK_ETC/dynamic/infra-mcp.yml" 127.0.0.1 websecure letsencrypt
+    install_traefik
 }
 
 # --- Commandes --------------------------------------------------------------------
@@ -284,6 +634,7 @@ cmd_install() {
     step_files
     step_vault
     step_known_hosts
+    step_proxy
     step_services
     step_checks
     summary_install
@@ -294,6 +645,7 @@ cmd_update() {
     step_repo
     step_tool
     step_files
+    step_proxy_update
     step_services
     step_checks
 }
@@ -370,18 +722,21 @@ cmd_cloud_init() {
     as_service env INFRA_MCP_ANSIBLE_DIR="$REPO_DIR" "$VENV/bin/infra-mcp" cloud-init "$host"
 }
 
+usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}"; }
+
 main() {
     [[ $(id -u) == 0 ]] || die "à lancer en root"
     local command_name=${1:-}
     shift || true
-    REPO="" TOOL="" BOOTSTRAP_USER=root
+    REPO="" TOOL="" DOMAIN="" BOOTSTRAP_USER=root
     local positional=()
     while (($#)); do
         case $1 in
             --repo) REPO=$2; shift 2 ;;
             --tool) TOOL=$2; shift 2 ;;
+            --domain) DOMAIN=$2; shift 2 ;;
             --bootstrap-user) BOOTSTRAP_USER=$2; shift 2 ;;
-            -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+            -h | --help) usage; exit 0 ;;
             *) positional+=("$1"); shift ;;
         esac
     done
@@ -390,8 +745,11 @@ main() {
         update) cmd_update ;;
         add-host) cmd_add_host "${positional[0]:-}" ;;
         cloud-init) cmd_cloud_init "${positional[0]:-}" ;;
-        *) sed -n '2,13p' "$0"; exit 1 ;;
+        *) usage; exit 1 ;;
     esac
 }
 
-main "$@"
+# Sourcé (tests) : fonctions seulement.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi
