@@ -99,6 +99,29 @@ def test_handover(tmp_path):
     assert out.endswith("relais [install --domain mcp.exemple.fr] 1\n")  # exec : pas de « suite »
 
 
+def test_repo_suit_sa_seule_branche(tmp_path):
+    """update ne récupère que la branche suivie, et s'arrête si le pull échoue."""
+    origin, repo = tmp_path / "origin.git", tmp_path / "repo"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
+    subprocess.run([*git, "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run([*git, "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+    for branch in ("main", "pr"):
+        subprocess.run([*git, "-C", str(repo), "checkout", "-q", "-B", branch], check=True)
+        subprocess.run([*git, "-C", str(repo), "commit", "-q", "--allow-empty", "-m", branch], check=True)
+        subprocess.run([*git, "-C", str(repo), "push", "-q", "origin", branch], check=True, capture_output=True)
+    subprocess.run([*git, "-C", str(repo), "checkout", "-q", "main"], check=True)
+    subprocess.run([*git, "-C", str(repo), "branch", "-q", "-u", "origin/main"], check=True)
+    setup = f'REPO_DIR="{repo}"; as_service() {{ (cd "$REPO_DIR" && "$@"); }}; '
+    assert "à jour" in sourced(setup + "step_repo")
+    fetch = subprocess.run(["git", "-C", str(repo), "config", "--get-all", "remote.origin.fetch"],
+                           capture_output=True, text=True, check=True).stdout
+    assert fetch == "+refs/heads/main:refs/remotes/origin/main\n"
+    shutil.rmtree(origin)
+    res = subprocess.run(["bash", "-c", f'source "{SCRIPT}"; {setup}step_repo; echo suite'],
+                         capture_output=True, text=True)
+    assert res.returncode != 0 and "suite" not in res.stdout and "git pull a échoué" in res.stderr
+
+
 def test_unite_lit_le_fichier_local():
     unit = (DEPLOY / "infra-mcp.service").read_text()
     assert "EnvironmentFile=-/etc/infra-mcp/infra-mcp.env" in unit
