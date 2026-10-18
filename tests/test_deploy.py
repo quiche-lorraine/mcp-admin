@@ -136,3 +136,10 @@ def test_commande_cloud_init():
     ko = subprocess.run([sys.executable, "-m", "infra_mcp.cli", "cloud-init", "inconnu"],
                         capture_output=True, text=True, env={**__import__("os").environ, **env})
     assert ko.returncode == 1 and "absent de l'inventaire" in ko.stderr
+
+
+def test_outil_reinstalle_a_chaque_commit():
+    # Même numéro de version d'un commit à l'autre : sans réinstallation forcée,
+    # pip garderait l'ancien et update ne mettrait rien à jour.
+    step = SCRIPT.read_text().split("step_tool() {", 1)[1].split("\n}\n", 1)[0]
+    assert '--force-reinstall --no-deps "${spec[@]}"' in step

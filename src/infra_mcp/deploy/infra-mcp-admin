@@ -215,13 +215,20 @@ step_tool() {
     say "Outil infra-mcp ($VENV)"
     [[ -x $VENV/bin/python ]] || python3 -m venv "$VENV"
     "$VENV/bin/pip" install --quiet --upgrade pip
+    local spec=(-r "$REPO_DIR/requirements.txt")
     if [[ -n ${TOOL:-} ]]; then
         warn "version imposée par --tool : $TOOL (et non celle de requirements.txt)"
-        "$VENV/bin/pip" install --quiet "$TOOL"
-    else
-        "$VENV/bin/pip" install --quiet -r "$REPO_DIR/requirements.txt"
+        spec=("$TOOL")
     fi
-    info "$("$VENV/bin/pip" show infra-mcp | grep -E '^Version') ; socle : $(as_service "$(ansible_bin ansible-galaxy)" collection list infra_mcp.core 2>/dev/null | awk '/infra_mcp.core/ {print $2}')"
+    "$VENV/bin/pip" install --quiet "${spec[@]}"
+    # Le numéro de version ne change pas d'un commit à l'autre : sans réinstallation
+    # forcée, pip garderait l'outil déjà installé. Dépendances non retouchées.
+    "$VENV/bin/pip" install --quiet --force-reinstall --no-deps "${spec[@]}"
+    local commit
+    commit=$("$VENV/bin/python" -I -c 'import importlib.metadata as m, json
+d = m.distribution("infra-mcp").read_text("direct_url.json")
+print(json.loads(d).get("vcs_info", {}).get("commit_id", "")[:7] if d else "")' 2>/dev/null) || commit=""
+    info "infra-mcp $("$VENV/bin/pip" show infra-mcp | awk '/^Version:/ {print $2}')${commit:+ (commit $commit)} ; socle : $(as_service "$(ansible_bin ansible-galaxy)" collection list infra_mcp.core 2>/dev/null | awk '/infra_mcp.core/ {print $2}')"
 }
 
 # Unités systemd et ce script, depuis le paquet installé : ils suivent sa version.
