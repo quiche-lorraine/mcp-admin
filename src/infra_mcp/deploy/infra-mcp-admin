@@ -3,13 +3,16 @@
 # machines au parc. À lancer en root sur le contrôleur. Chaque commande peut être
 # relancée : elle ne refait que ce qui manque.
 #
-#   infra-mcp-admin install --repo <url du repo de config> [--domain <nom>] [--tool <spec pip>]
+#   infra-mcp-admin install [--repo <url du repo de config>] [--domain <nom>] [--tool <spec pip>]
 #   infra-mcp-admin update [--tool <spec pip>]
 #   infra-mcp-admin add-host <hôte> [--bootstrap-user root]
 #   infra-mcp-admin cloud-init <hôte>
 #
-# install cherche un Traefik déjà en place pour y ajouter la route du serveur
-# MCP, ou propose d'en installer un (HTTPS sur --domain, Let's Encrypt).
+# install fait tout, en posant ses questions au fur et à mesure (repo s'il n'est
+# pas donné, domaine, mot de passe vault, empreintes, token). Il branche le
+# serveur MCP sur un Traefik déjà en place, ou propose d'en installer un.
+# Première fois, en une commande :
+#   curl -fsSL https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/main/install.sh | sudo bash
 # --tool remplace la version de l'outil figée par le repo de config
 # (requirements.txt) : réservé aux tests d'une version de développement.
 
@@ -47,6 +50,12 @@ confirm() {
     local answer
     read -r -p "    $1 [o/N] " answer || answer=
     [[ $answer =~ ^[oOyY]$ ]]
+}
+# Réponse libre ; vide si l'entrée est fermée.
+ask() {
+    local answer
+    read -r -p "    $1 " answer || answer=
+    printf '%s' "$answer"
 }
 has_systemd() { [[ -d /run/systemd/system ]]; }
 # Valeur d'un fichier clé=valeur, lue sans l'exécuter (jamais sourcé).
@@ -147,7 +156,12 @@ step_repo() {
         as_service git pull --ff-only --quiet && info "à jour : $(as_service git log -1 --format='%h %s')"
         return
     fi
-    [[ -n ${REPO:-} ]] || die "première installation : --repo <url du repo de config> obligatoire"
+    if [[ -z ${REPO:-} ]]; then
+        REPO=$(ask "Repo de config (owner/repo GitHub, ou URL git) :")
+        [[ -n $REPO ]] || die "repo de config obligatoire (--repo)"
+    fi
+    REPO=$(normalize_repo "$REPO")
+    info "repo : $REPO"
     if [[ $REPO == git@github.com:* ]]; then
         # Clé dédiée au repo (deploy key en lecture seule), distincte de celle du parc.
         if [[ ! -f $DEPLOY_KEY ]]; then
@@ -162,18 +176,39 @@ step_repo() {
     fi
     local err
     err=$(mktemp)
-    if ! runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git clone --quiet "$REPO" "$REPO_DIR" 2>"$err"; then
-        cat "$err" >&2
-        rm -f "$err"
-        if [[ $REPO == git@github.com:* ]]; then
-            warn "Accès refusé : ajoute cette clé comme deploy key en LECTURE SEULE du repo"
-            warn "(GitHub → Settings → Deploy keys), puis relance la même commande :"
-            cat "$DEPLOY_KEY.pub"
+    until runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git ls-remote --quiet "$REPO" HEAD >/dev/null 2>"$err"; do
+        if [[ $REPO != git@github.com:* ]]; then
+            cat "$err" >&2
+            rm -f "$err"
+            die "repo inaccessible : $REPO"
         fi
-        exit 1
-    fi
+        # Repo privé : la clé dédiée doit y être ajoutée, en lecture seule.
+        local slug=${REPO#git@github.com:}
+        slug=${slug%.git}
+        warn "Le contrôleur n'a pas encore accès au repo. Ajoute cette clé comme deploy key,"
+        warn "SANS cocher « Allow write access » :"
+        info "  https://github.com/$slug/settings/keys/new"
+        info "  $(cat "$DEPLOY_KEY.pub")"
+        if ! confirm "Clé ajoutée ? (o : réessayer, sinon abandon)"; then
+            rm -f "$err"
+            die "abandon : relancer la même commande une fois la clé ajoutée"
+        fi
+    done
     rm -f "$err"
+    runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git clone --quiet "$REPO" "$REPO_DIR"
     info "cloné : $(as_service git log -1 --format='%h %s')"
+}
+
+# owner/repo, https://github.com/owner/repo(.git) -> git@github.com:owner/repo.git
+normalize_repo() {
+    local repo=$1
+    if [[ $repo =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$ ]]; then
+        repo=${BASH_REMATCH[1]}
+    fi
+    if [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        repo="git@github.com:${repo%.git}.git"
+    fi
+    printf '%s' "$repo"
 }
 
 step_tool() {
@@ -241,15 +276,45 @@ for host, hv in sorted(json.load(sys.stdin)["_meta"]["hostvars"].items()):
     print(host, hv.get("ansible_host", host), hv.get("ansible_port", 22))'
 }
 
+# Toutes les clés d'hôte inconnues du parc, confirmées en une fois.
 step_known_hosts() {
     say "Clés d'hôte du parc"
-    # Liste lue d'abord : l'entrée standard reste libre pour les confirmations.
-    local hosts line
-    mapfile -t hosts < <(inventory_hosts)
+    local hosts line name addr port target scanned fp
+    local new_keys="" table=() unreachable=() listing
+    listing=$(inventory_hosts) || die "inventaire du repo de config illisible (voir ci-dessus)"
+    mapfile -t hosts <<<"$listing"
     for line in "${hosts[@]}"; do
-        # shellcheck disable=SC2086
-        trust_host $line || true
+        read -r name addr port <<<"$line"
+        target=$addr
+        [[ $port != 22 ]] && target="[$addr]:$port"
+        if runuser -u "$SERVICE_USER" -- ssh-keygen -F "$target" -f "$KNOWN_HOSTS" >/dev/null; then
+            continue
+        fi
+        scanned=$(ssh-keyscan -T 5 -p "$port" -t ed25519 "$addr" 2>/dev/null) || true
+        if [[ -z $scanned ]]; then
+            unreachable+=("$name ($target)")
+            continue
+        fi
+        fp=$(ssh-keygen -lf - <<<"$scanned" | awk '{print $2}')
+        table+=("$(printf '%-20s %-28s %s' "$name" "$target" "$fp")")
+        new_keys+=$scanned$'\n'
     done
+    if ((${#unreachable[@]})); then
+        warn "injoignables (clé ajoutée plus tard, par add-host) : ${unreachable[*]}"
+    fi
+    if ((!${#table[@]})); then
+        info "aucune nouvelle clé à confirmer"
+        return
+    fi
+    info "Empreintes ED25519 à comparer avec la console de l'hébergeur"
+    info "(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub sur chaque machine) :"
+    printf '      %s\n' "${table[@]}"
+    if confirm "Toutes correctes ?"; then
+        printf '%s' "$new_keys" >>"$KNOWN_HOSTS"
+        info "${#table[@]} clé(s) ajoutée(s)"
+    else
+        warn "aucune clé ajoutée : add-host <hôte> les fera confirmer une par une"
+    fi
 }
 
 step_services() {
@@ -326,21 +391,47 @@ check_proxy() {
     fi
 }
 
+tokens_cmd() {
+    runuser -u "$SERVICE_USER" -- env INFRA_MCP_TOKENS="$ETC_DIR/tokens.json" "$VENV/bin/infra-mcp" token "$@"
+}
+
+# Le token de Claude Code, créé une fois ; la commande pour le brancher.
+step_token() {
+    say "Accès de Claude Code"
+    if tokens_cmd list | grep -q '"label": "claude-code"'; then
+        info "token « claude-code » déjà créé (infra-mcp token list / revoke pour le gérer)"
+        return
+    fi
+    local level token domain url
+    level=$(ask "Token pour Claude Code : [l]ecture (plan seulement), [e]criture (plan et apply), vide : aucun ?")
+    case ${level,,} in
+        l*) level="read" ;;
+        e*) level="write" ;;
+        *) info "pas de token : $SELF install le proposera de nouveau"; return ;;
+    esac
+    token=$(tokens_cmd create "$level" claude-code 2>/dev/null) || die "création du token impossible"
+    domain=$(conf_get DOMAIN "$PROXY_CONF")
+    url=${domain:+https://$domain/mcp}
+    info "Token créé ($level). Il ne sera plus affiché : lance maintenant, sur ton poste :"
+    printf '\n      claude mcp add --transport http infra %s \\\n        --header "Authorization: Bearer %s"\n\n' \
+        "${url:-https://<domaine du serveur MCP>/mcp}" "$token"
+}
+
 summary_install() {
     say "Reste à faire"
-    info "1. Ajouter la clé publique du contrôleur dans admin_users_global (repo de config) :"
-    info "   $(cat "$FLEET_KEY.pub")"
-    info "2. Créer un token :"
-    info "   runuser -u $SERVICE_USER -- env INFRA_MCP_TOKENS=$ETC_DIR/tokens.json $VENV/bin/infra-mcp token create read <usage>"
-    local domain
-    domain=$(conf_get DOMAIN "$PROXY_CONF")
-    if [[ -n $domain ]]; then
-        info "3. Brancher Claude Code :"
-        info "   claude mcp add --transport http infra https://$domain/mcp --header \"Authorization: Bearer <token>\""
-    else
-        info "3. Exposer le service en HTTPS derrière un reverse proxy (relancer install pour installer Traefik)."
+    local n=1 key
+    key=$(awk '{print $2}' "$FLEET_KEY.pub")
+    if ! as_service "$(ansible_bin ansible-inventory)" --list 2>/dev/null | grep -qF "$key"; then
+        info "$n. Donner au contrôleur l'accès au parc : dans le repo de config, ajouter sa clé"
+        info "   aux ssh_keys du compte d'Ansible dans admin_users_global, puis merger :"
+        info "   $(cat "$FLEET_KEY.pub")"
+        n=$((n + 1))
     fi
-    info "4. Pour chaque machine : $SELF add-host <hôte>"
+    if [[ -z $(conf_get DOMAIN "$PROXY_CONF") ]]; then
+        info "$n. Exposer le service en HTTPS : relancer $SELF install pour installer Traefik."
+        n=$((n + 1))
+    fi
+    info "$n. Pour chaque machine : $SELF add-host <hôte>"
 }
 
 # --- Reverse proxy ----------------------------------------------------------------
@@ -387,12 +478,19 @@ read_facts() {
 
 ask_domain() {
     local domain=${DOMAIN:-$(conf_get DOMAIN "$PROXY_CONF")}
-    if [[ -z $domain ]]; then
-        read -r -p "    Nom de domaine du serveur MCP (ex. mcp.exemple.fr, vide : plus tard) : " domain || domain=
+    if [[ -n $domain ]]; then
+        domain=${domain,,}
+        traefik_helper check-domain "$domain" || die "nom de domaine invalide : $domain"
     fi
-    domain=${domain,,}
-    [[ -n $domain ]] || return 1
-    traefik_helper check-domain "$domain" || die "nom de domaine invalide : $domain"
+    while [[ -z $domain ]]; do
+        domain=$(ask "Nom de domaine du serveur MCP (ex. mcp.exemple.fr, vide : plus tard) :")
+        domain=${domain,,}
+        [[ -n $domain ]] || return 1
+        if ! traefik_helper check-domain "$domain"; then
+            warn "nom de domaine invalide : $domain"
+            domain=""
+        fi
+    done
     DOMAIN=$domain
     conf_set DOMAIN "$domain" "$PROXY_CONF"
 }
@@ -626,25 +724,42 @@ step_proxy_update() {
 
 # --- Commandes --------------------------------------------------------------------
 
+# Si ce script n'est pas celui que step_files vient d'installer (lancé par
+# install.sh, ou avant une mise à jour de la version figée par le repo de
+# config), la suite se fait avec celui-là. Les étapes déjà faites sont
+# rejouées à vide.
+handover() {
+    [[ -z ${INFRA_MCP_ADMIN_PINNED:-} ]] || return 0
+    [[ $(sha256sum "$SELF" | cut -d' ' -f1) != "$RUNNING_SUM" ]] || return 0
+    info "suite avec $SELF, à la version du repo de config"
+    local args=("$@")
+    [[ -z $DOMAIN ]] || args+=(--domain "$DOMAIN")
+    [[ -z $TOOL ]] || args+=(--tool "$TOOL")
+    INFRA_MCP_ADMIN_PINNED=1 exec "$SELF" "${args[@]}"
+}
+
 cmd_install() {
     step_packages
     step_user
     step_repo
     step_tool
     step_files
+    handover install
     step_vault
     step_known_hosts
     step_proxy
     step_services
     step_checks
+    step_token
     summary_install
 }
 
 cmd_update() {
-    [[ -d $REPO_DIR/.git && -x $VENV/bin/python ]] || die "contrôleur non installé : $0 install --repo <url>"
+    [[ -d $REPO_DIR/.git && -x $VENV/bin/python ]] || die "contrôleur non installé : $0 install"
     step_repo
     step_tool
     step_files
+    handover update
     step_proxy_update
     step_services
     step_checks
@@ -726,6 +841,8 @@ usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}"; }
 
 main() {
     [[ $(id -u) == 0 ]] || die "à lancer en root"
+    # Empreinte de ce script, lu avant que step_files ne le remplace.
+    RUNNING_SUM=$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | cut -d' ' -f1) || RUNNING_SUM=""
     local command_name=${1:-}
     shift || true
     REPO="" TOOL="" DOMAIN="" BOOTSTRAP_USER=root
