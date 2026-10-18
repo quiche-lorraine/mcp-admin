@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- `swarm_join` : le plan ne plante plus sur un swarm pas encore initialisé
+  (aucun token à lire en check mode), ce qui bloquait le premier `add-host`
+  d'une machine du groupe `swarm`.
+
 ## 0.3.0
 
 - Réseaux partagés entre stacks : `swarm_networks` liste des réseaux overlay
