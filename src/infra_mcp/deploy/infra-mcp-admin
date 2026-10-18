@@ -58,6 +58,13 @@ ask() {
     printf '%s' "$answer"
 }
 has_systemd() { [[ -d /run/systemd/system ]]; }
+# Sans aucune question : ni debconf, ni needrestart (Ubuntu), qui sinon attend
+# une réponse au terminal après la mise à jour d'une bibliothèque.
+apt_install() {
+    local env=(DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=l)
+    env "${env[@]}" apt-get update -qq
+    env "${env[@]}" apt-get install -y -qq -o Dpkg::Use-Pty=0 "$@" </dev/null >/dev/null
+}
 # Valeur d'un fichier clé=valeur, lue sans l'exécuter (jamais sourcé).
 conf_get() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1; }
 conf_set() {
@@ -97,7 +104,8 @@ step_packages() {
     command -v ss >/dev/null || missing+=(iproute2)
     python3 -c 'import ensurepip, venv' 2>/dev/null || missing+=(python3-venv)
     if ((${#missing[@]})); then
-        apt-get update -qq && apt-get install -y -qq "${missing[@]}"
+        info "installation : ${missing[*]}"
+        apt_install "${missing[@]}"
     fi
     info "git, ssh, curl, ss et python3-venv présents"
 }
@@ -213,6 +221,7 @@ normalize_repo() {
 
 step_tool() {
     say "Outil infra-mcp ($VENV)"
+    [[ -x $VENV/bin/python ]] || info "première installation d'Ansible : plusieurs minutes sur une petite machine"
     [[ -x $VENV/bin/python ]] || python3 -m venv "$VENV"
     "$VENV/bin/pip" install --quiet --upgrade pip
     local spec=(-r "$REPO_DIR/requirements.txt")

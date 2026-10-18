@@ -17,7 +17,10 @@ main() {
     local ref=${INFRA_MCP_REF:-main}
     local url="https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/$ref/src/infra_mcp/deploy/infra-mcp-admin"
     [[ $(id -u) == 0 ]] || { echo "à lancer en root : ... | sudo bash" >&2; exit 1; }
-    command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl; }
+    if ! command -v curl >/dev/null; then
+        export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=l
+        apt-get update -qq && apt-get install -y -qq curl </dev/null >/dev/null
+    fi
     WORK_DIR=$(mktemp -d)
     trap 'rm -rf "$WORK_DIR"' EXIT
     curl -fsSL -o "$WORK_DIR/infra-mcp-admin" "$url"
