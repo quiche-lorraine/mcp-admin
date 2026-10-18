@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
@@ -28,7 +29,7 @@ def _swarm_active() -> bool:
 
 pytestmark = pytest.mark.skipif(not _swarm_active(), reason="pas de swarm local (docker swarm init)")
 
-STACK, SECRET = "e2etest", "e2etest_token"
+STACK, SECRET, NETWORK = "e2etest", "e2etest_token", "e2etest_shared"
 
 
 def docker(*args) -> str:
@@ -58,12 +59,13 @@ class Env:
     def compose_path(self):
         return self.stacks / STACK / "compose.yml"
 
-    def config(self, stacks, absent=()):
+    def config(self, stacks, absent=(), networks=()):
         (self.vars_dir / "stacks.yml").write_text(yaml.safe_dump({
             "stacks_install_prereqs": False,
             "swarm_stacks": stacks,
             "swarm_stacks_absent": list(absent),
             "swarm_secrets": {SECRET: "{{ vault_token }}"},
+            "swarm_networks": list(networks),
         }))
 
     def vault(self, data):
@@ -90,6 +92,12 @@ def env(tmp_path):
     e = Env(tmp_path)
     yield e
     subprocess.run(["docker", "stack", "rm", STACK], capture_output=True)
+    # Le réseau partagé ne se supprime qu'une fois les tâches de la stack arrêtées.
+    for _ in range(30):
+        if subprocess.run(["docker", "network", "rm", NETWORK], capture_output=True).returncode == 0 \
+                or NETWORK not in docker("network", "ls", "--format", "{{.Name}}").split():
+            break
+        time.sleep(1)
     for name in docker("secret", "ls", "--format", "{{.Name}}").split():
         if name.startswith(SECRET):
             subprocess.run(["docker", "secret", "rm", name], capture_output=True)
@@ -133,6 +141,31 @@ def test_cycle_de_vie_d_une_stack(env):
     assert STACK in docker("stack", "ls", "--format", "{{.Name}}")
     assert env.run()["changed"] == 1
     assert STACK not in docker("stack", "ls", "--format", "{{.Name}}")
+
+
+def test_reseau_partage(env):
+    compose = yaml.safe_load(env.compose_path.read_text())
+    compose["services"]["web"]["networks"] = ["default", NETWORK]
+    compose["networks"] = {NETWORK: {"external": True}}
+    env.compose_path.write_text(yaml.safe_dump(compose))
+
+    # 1. réseau external absent de swarm_networks : refusé
+    env.run("--check", ok=False)
+    assert f"réseaux external absents de swarm_networks : {NETWORK}" in env.log
+
+    # 2. déclaré : plan annonce le réseau, apply le crée chiffré et y branche la stack
+    env.config(stacks=[{"name": STACK, "secrets": [SECRET]}], networks=[NETWORK])
+    assert env.run("--check")["changed"] == 3  # secret, réseau, stack
+    assert NETWORK not in docker("network", "ls", "--format", "{{.Name}}").split()
+    assert env.run()["changed"] == 3
+    net = json.loads(docker("network", "inspect", NETWORK))[0]
+    assert (net["Driver"], net["Scope"], net["Options"].get("encrypted")) == ("overlay", "swarm", "true"), net
+    targets = [n["Target"] for n in env.service()["TaskTemplate"]["Networks"]]
+    assert net["Id"] in targets, targets
+
+    # 3. idempotent
+    assert env.run("--check")["changed"] == 0
+    assert env.run()["changed"] == 0
 
 
 def test_variable_vault_mal_nommee_refusee(env):

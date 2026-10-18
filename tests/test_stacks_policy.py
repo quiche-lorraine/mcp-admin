@@ -49,6 +49,32 @@ def test_incoherences_d_inventaire_detectees(tmp_path):
     assert "secrets absents de swarm_secrets : ['api']" in problems
 
 
+def test_reseaux_partages_mal_nommes(tmp_path):
+    vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
+    vars_dir.mkdir(parents=True)
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({
+        "swarm_stacks": [], "swarm_secrets": {}, "swarm_networks": ["proxy", "Proxy", "ingress", "a b"],
+    }))
+    problems = lint.stacks_inventory_violations(tmp_path)
+    assert problems == [f"swarm_networks : nom invalide ou réservé : {n!r}" for n in ("Proxy", "ingress", "a b")]
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({"swarm_stacks": [], "swarm_networks": "proxy"}))
+    assert lint.stacks_inventory_violations(tmp_path) == ["swarm_networks : liste de noms de réseaux attendue"]
+
+
+def test_reseau_partage_accepte_par_lint(tmp_path):
+    """run() passe swarm_networks à la politique des compose."""
+    vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
+    vars_dir.mkdir(parents=True)
+    (tmp_path / "stacks" / "app").mkdir(parents=True)
+    compose = {**_svc(networks=["proxy"]), "networks": {"proxy": {"external": True}}}
+    (tmp_path / "stacks" / "app" / "compose.yml").write_text(yaml.safe_dump(compose))
+    config = {"swarm_stacks": [{"name": "app"}], "swarm_secrets": {}}
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump(config))
+    assert any("external interdit" in p for p in lint.run(tmp_path))
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({**config, "swarm_networks": ["proxy"]}))
+    assert not any("réseau" in p for p in lint.run(tmp_path)), lint.run(tmp_path)
+
+
 def _svc(**kwargs):
     return {"services": {"app": {"image": "nginx:1.27.2", **kwargs}}}
 
@@ -85,11 +111,16 @@ def _svc(**kwargs):
         ({**_svc(volumes=[{"type": "volume", "source": "s", "target": "/s"}]),
           "volumes": {"s": {"driver_opts": {"o": "bind", "device": "/var/run/docker.sock"}}}},
          "socket Docker"),
-        ({**_svc(networks=["proxy"]), "networks": {"proxy": {"external": True}}}, "external interdit"),
+        # Seuls les réseaux de swarm_networks (ici proxy) peuvent être external
+        ({**_svc(networks=["back"]), "networks": {"back": {"external": True}}}, "external interdit"),
+        # Le réseau désigné doit être celui de swarm_networks, sous le nom de sa clé
+        ({**_svc(networks=["proxy"]), "networks": {"proxy": {"external": True, "name": "autre"}}}, "sans name"),
+        ({**_svc(networks=["proxy"]), "networks": {"proxy": {"external": {"name": "autre"}}}}, "sans name"),
     ],
 )
 def test_violations_detectees(compose, expected):
-    assert any(expected in v for v in violations(compose)), violations(compose)
+    found = violations(compose, shared_networks=["proxy"])
+    assert any(expected in v for v in found), found
 
 
 @pytest.mark.parametrize(
@@ -107,7 +138,9 @@ def test_violations_detectees(compose, expected):
         {**_svc(volumes=["data:/data"]),  # volume NFS : driver_opts sans montage de l'hôte
          "volumes": {"data": {"driver_opts": {"type": "nfs", "o": "addr=10.0.0.5,rw", "device": ":/export"}}}},
         {**_svc(networks=["back"]), "networks": {"back": {"driver": "overlay"}}},
+        {**_svc(networks=["back"]), "networks": {"back": {"external": False}}},
+        {**_svc(networks=["proxy"]), "networks": {"proxy": {"external": True}}},  # réseau partagé
     ],
 )
 def test_configurations_acceptees(compose):
-    assert violations(compose) == []
+    assert violations(compose, shared_networks=["proxy"]) == []

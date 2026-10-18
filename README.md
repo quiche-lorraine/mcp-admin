@@ -160,12 +160,35 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   revue de PR. Sont aussi refusés : l'interpolation `$VAR` (évaluée avec
   l'environnement root du manager : `${HOME}:/data` monterait `/root`), les
   volumes `driver_opts` qui montent un chemin de l'hôte (traités comme un
-  montage direct), et les réseaux `external`.
+  montage direct), et les réseaux `external` autres que les réseaux partagés
+  (ci-dessous).
 - **Réseaux chiffrés** : le socle force `encrypted` sur le réseau par défaut et
   sur chaque réseau déclaré : le trafic entre nœuds passe en IPsec, ESP étant
   ouvert entre les nœuds par `swarm-join`. Un réseau existant ne change pas
   d'option : pour chiffrer une stack déjà déployée, supprime-la puis
   redéploie-la.
+- **Réseaux partagés** : pour que plusieurs stacks se parlent (un reverse proxy
+  et les services qu'il expose), déclare le réseau dans `swarm_networks`
+  (`group_vars/swarm_managers/stacks.yml`, là où `infra-mcp lint` le lit). Le
+  playbook le crée en overlay chiffré avant de déployer les stacks, qui s'y
+  branchent sous le nom de sa clé :
+
+  ```yaml
+  # group_vars/swarm_managers/stacks.yml
+  swarm_networks: [proxy]
+
+  # stacks/<nom>/compose.yml
+  services:
+    web:
+      networks: [default, proxy]
+  networks:
+    proxy:
+      external: true
+  ```
+
+  Ce sont les seuls réseaux `external` acceptés, sans `name:`. Retirer un réseau
+  de la liste ne le supprime pas. Un réseau du même nom créé sans chiffrement est
+  recréé chiffré, ce qui échoue tant qu'un service l'utilise.
 
 ## Installation sur le contrôleur
 

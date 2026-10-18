@@ -209,6 +209,9 @@ EXCEPTIONS = {
 DOCKER_SOCKETS = {"/var/run/docker.sock", "/run/docker.sock"}
 SENSITIVE = ("/etc", "/root", "/home", "/proc", "/sys", "/boot", "/dev", "/run", "/var/run", "/var/lib/docker")
 HARMLESS = {"/etc/localtime", "/etc/timezone"}  # lecture seule, courants pour l'heure
+# Réseaux partagés entre stacks (swarm_networks) : créés et chiffrés par le socle.
+NETWORK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+RESERVED_NETWORKS = {"bridge", "host", "none", "ingress", "docker_gwbridge"}
 
 
 def _volume_host_path(definition):
@@ -259,7 +262,7 @@ def _image_problem(image):
     return None
 
 
-def compose_violations(compose: dict) -> list[str]:
+def compose_violations(compose: dict, shared_networks=()) -> list[str]:
     found = []
     services = compose.get("services") or {}
     if not services:
@@ -268,9 +271,17 @@ def compose_violations(compose: dict) -> list[str]:
     # « ${HOME}:/data » monte /root. Seul $$ (un $ littéral) est accepté.
     for value in sorted({v for v in _strings(compose) if re.search(r"(?<!\$)\$(?!\$)", v.replace("$$", ""))}):
         found.append(f"interpolation interdite : {value!r} (évaluée avec l'environnement root du manager)")
+    # Une stack crée ses réseaux (chiffrés par le socle) ; seuls les réseaux partagés,
+    # créés eux aussi par le socle, peuvent être external.
     for net, definition in (compose.get("networks") or {}).items():
-        if (definition or {}).get("external"):
-            found.append(f"réseau {net} : external interdit (les réseaux d'une stack sont créés par elle, et chiffrés)")
+        external = (definition or {}).get("external")
+        if external in (None, False):
+            continue
+        if external is not True or "name" in definition:
+            found.append(f"réseau {net} : external: true, sans name: (un réseau partagé porte le nom de sa clé)")
+        elif net not in shared_networks:
+            found.append(f"réseau {net} : external interdit hors des réseaux partagés de swarm_networks"
+                         " (les autres réseaux d'une stack sont créés par elle, et chiffrés)")
     for name, svc in services.items():
         allowed = svc.get("x-allow") or {}
         if not isinstance(allowed, dict) or not all(isinstance(r, str) and r.strip() for r in allowed.values()):
@@ -315,14 +326,29 @@ def compose_violations(compose: dict) -> list[str]:
     return found
 
 
-def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
+def _stacks_config(ansible_dir: Path) -> dict:
     path = ansible_dir / "inventory" / "group_vars" / "swarm_managers" / "stacks.yml"
-    if not path.exists():
+    return (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+
+
+def _shared_networks(config: dict) -> list:
+    networks = config.get("swarm_networks") or []
+    return networks if isinstance(networks, list) else []
+
+
+def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
+    config = _stacks_config(ansible_dir)
+    if not config:
         return []
-    config = yaml.safe_load(path.read_text()) or {}
+    found = []
+    if not isinstance(config.get("swarm_networks") or [], list):
+        found.append("swarm_networks : liste de noms de réseaux attendue")
+    for net in _shared_networks(config):
+        if not isinstance(net, str) or not NETWORK_NAME_RE.match(net) or net in RESERVED_NETWORKS:
+            found.append(f"swarm_networks : nom invalide ou réservé : {net!r}")
     declared = set((config.get("swarm_secrets") or {}).keys())
     names = [s["name"] for s in config.get("swarm_stacks") or []]
-    found = [f"stack {n} : dans swarm_stacks et swarm_stacks_absent" for n in set(names) & set(config.get("swarm_stacks_absent") or [])]
+    found += [f"stack {n} : dans swarm_stacks et swarm_stacks_absent" for n in set(names) & set(config.get("swarm_stacks_absent") or [])]
     for stack in config.get("swarm_stacks") or []:
         compose_path = ansible_dir / "stacks" / stack["name"] / "compose.yml"
         if not compose_path.is_file():
@@ -349,7 +375,8 @@ def run(ansible_dir: Path) -> list[str]:
             problems += [f"{path} : {v}" for v in real_execution_violations(path)]
     problems += [f"{ansible_dir} : {v}" for v in data_only_violations(ansible_dir)]
     problems += vars_layout_violations(ansible_dir)
+    shared = _shared_networks(_stacks_config(ansible_dir))
     for path in sorted((ansible_dir / "stacks").glob("*/compose.yml")):
-        problems += [f"{path} : {v}" for v in compose_violations(yaml.safe_load(path.read_text()))]
+        problems += [f"{path} : {v}" for v in compose_violations(yaml.safe_load(path.read_text()), shared)]
     problems += stacks_inventory_violations(ansible_dir)
     return problems

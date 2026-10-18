@@ -7,6 +7,12 @@ swarm_stacks: []
 # Retirer une stack de swarm_stacks ne la supprime pas du swarm : liste-la ici.
 swarm_stacks_absent: []
 
+# Réseaux partagés entre stacks, créés chiffrés par le playbook : une stack s'y
+# branche en le déclarant external: true dans son compose (seuls réseaux external
+# acceptés). Par exemple un reverse proxy et les services qu'il expose.
+swarm_networks: []
+#  - proxy
+
 # Secrets Docker, alimentés par des variables vault_* chiffrées avec ansible-vault
 # dans group_vars/swarm_managers/vault.yml (même dossier). Changer une valeur crée une nouvelle
 # version du secret et redéploie les stacks qui l'utilisent.
