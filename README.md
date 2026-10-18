@@ -169,39 +169,48 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 
 ## Installation sur le contrôleur
 
-Tout passe par `infra-mcp-admin`, livré avec l'outil. À lancer en root ; chaque
-commande peut être relancée, elle ne refait que ce qui manque.
+Une seule commande, en root sur le contrôleur (Debian ou Ubuntu), depuis une
+session SSH :
 
 ```bash
-# Première fois : le script, à la version figée par le repo de config
-# (le commit de son requirements.txt). Lis-le avant de l'exécuter.
-curl -fsSLo infra-mcp-admin \
-  https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/<commit>/src/infra_mcp/deploy/infra-mcp-admin
-sudo bash infra-mcp-admin install --repo git@github.com:quiche-lorraine/infra.git \
-  --domain mcp.exemple.fr
+curl -fsSL https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/main/install.sh | sudo bash
 ```
+
+Le script pose ses questions au fur et à mesure, sans jamais demander de
+relancer. On peut aussi y répondre d'avance :
+`... | sudo bash -s -- --repo quiche-lorraine/infra --domain mcp.exemple.fr`.
+Il peut être relancé autant de fois que voulu : il ne refait que ce qui manque.
+
+`install.sh` récupère `infra-mcp-admin` sur `main` et lui passe la main. Dès
+que le repo de config est cloné, la suite se fait avec `infra-mcp-admin` à la
+version que ce repo fige (`requirements.txt`). Pour lire le script avant de
+l'exécuter : remplacer `| sudo bash` par `> install.sh`.
 
 `install` :
 1. crée le compte `infra-mcp`, ses dossiers et sa clé SSH vers le parc ;
-2. clone le repo de config dans `/opt/infra`. S'il est privé, une clé dédiée
-   (distincte de celle du parc) est créée : le script l'affiche, ajoute-la en
-   *deploy key* **en lecture seule** sur GitHub, puis relance la commande. La clé
+2. clone le repo de config dans `/opt/infra` (`owner/repo` suffit pour GitHub).
+   S'il est privé, une clé dédiée (distincte de celle du parc) est créée : le
+   script l'affiche avec le lien de la page GitHub où l'ajouter en *deploy
+   key* **en lecture seule**, attend que ce soit fait, puis continue. La clé
    d'hôte de GitHub est vérifiée contre son empreinte publiée ;
 3. installe l'outil dans `/opt/infra-mcp/venv`, à la version de
    `requirements.txt` (socle et paquet ansible compris) ;
 4. installe les unités systemd et se copie dans `/usr/local/sbin`, depuis le
    paquet installé : tout suit la même version ;
 5. demande le mot de passe vault (sans écho), s'il n'est pas déjà en place ;
-6. récupère les clés d'hôte du parc et **demande de confirmer chaque
-   empreinte** (à comparer avec `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+6. récupère les clés d'hôte du parc et les affiche toutes avec leur empreinte,
+   **à confirmer** (à comparer avec `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
    depuis la console de l'hébergeur) ;
 7. met le serveur derrière un reverse proxy HTTPS (voir ci-dessous) ;
 8. démarre les services, puis vérifie : `infra-mcp lint`,
    `systemd-analyze security`, que le serveur répond 401 sans token, et la
-   même chose en HTTPS à travers le proxy, certificat compris.
+   même chose en HTTPS à travers le proxy, certificat compris ;
+9. crée le token de Claude Code (lecture ou écriture, au choix) et affiche la
+   commande `claude mcp add` complète, à lancer sur ton poste.
 
-Il termine par ce qui reste à faire : mettre la clé publique du contrôleur dans
-`admin_users_global`, créer un token, brancher Claude Code.
+Il termine par ce qui reste à faire : ajouter la clé publique du contrôleur
+dans `admin_users_global` si elle n'y est pas encore, puis `add-host` pour
+chaque machine.
 
 **Reverse proxy.** Le serveur n'écoute qu'en HTTP local ; `install` cherche un
 Traefik déjà en place :
@@ -262,7 +271,8 @@ sudo infra-mcp-admin update
 
 ## Tokens
 
-Toujours en tant que `infra-mcp`, pour que le service puisse lire le fichier :
+`install` crée le token « claude-code ». Pour en gérer d'autres, toujours en
+tant que `infra-mcp`, pour que le service puisse lire le fichier :
 
 ```bash
 sudo -u infra-mcp env INFRA_MCP_TOKENS=/etc/infra-mcp/tokens.json \

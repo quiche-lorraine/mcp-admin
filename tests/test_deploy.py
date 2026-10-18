@@ -13,6 +13,7 @@ from infra_mcp import cloudinit, lint
 
 DEPLOY = Path(cloudinit.__file__).parent / "deploy"
 SCRIPT = DEPLOY / "infra-mcp-admin"
+INSTALL = Path(__file__).parents[1] / "install.sh"
 
 
 def test_fichiers_livres_avec_le_paquet():
@@ -27,8 +28,51 @@ def test_script_syntaxe():
 
 @pytest.mark.skipif(not shutil.which("shellcheck"), reason="shellcheck absent (pip install shellcheck-py)")
 def test_script_shellcheck():
-    res = subprocess.run(["shellcheck", str(SCRIPT)], capture_output=True, text=True)
+    res = subprocess.run(["shellcheck", str(SCRIPT), str(INSTALL)], capture_output=True, text=True)
     assert res.returncode == 0, res.stdout
+
+
+def test_install_sh():
+    subprocess.run(["bash", "-n", str(INSTALL)], check=True)
+    text = INSTALL.read_text()
+    # Récupère le script à son emplacement dans le repo, puis lui passe la main
+    assert "/src/infra_mcp/deploy/infra-mcp-admin" in text
+    assert SCRIPT.relative_to(INSTALL.parent).as_posix() == "src/infra_mcp/deploy/infra-mcp-admin"
+    # Sûr à travers « curl | bash » : rien ne s'exécute avant la dernière ligne
+    assert text.rstrip().splitlines()[-1] == 'main "$@"'
+
+
+def sourced(code: str) -> str:
+    """Exécute du bash avec les fonctions du script (sans lancer main)."""
+    res = subprocess.run(["bash", "-c", f'source "{SCRIPT}"; {code}'], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    return res.stdout
+
+
+@pytest.mark.parametrize(
+    "given, expected",
+    [
+        ("quiche-lorraine/infra", "git@github.com:quiche-lorraine/infra.git"),
+        ("https://github.com/quiche-lorraine/infra", "git@github.com:quiche-lorraine/infra.git"),
+        ("https://github.com/quiche-lorraine/infra.git/", "git@github.com:quiche-lorraine/infra.git"),
+        ("git@github.com:quiche-lorraine/infra.git", "git@github.com:quiche-lorraine/infra.git"),
+        ("file:///srv/infra.git", "file:///srv/infra.git"),
+    ],
+)
+def test_normalize_repo(given, expected):
+    assert sourced(f'normalize_repo "{given}"') == expected
+
+
+def test_handover(tmp_path):
+    stub = tmp_path / "infra-mcp-admin"
+    stub.write_text('#!/bin/bash\necho "relais [$*] $INFRA_MCP_ADMIN_PINNED"\n')
+    stub.chmod(0o755)
+    setup = f'SELF="{stub}" DOMAIN=mcp.exemple.fr TOOL=""; '
+    same = setup + f'RUNNING_SUM=$(sha256sum "{stub}" | cut -d" " -f1); handover install; echo suite'
+    assert sourced(same) == "suite\n"  # c'est déjà le script installé
+    assert sourced(setup + "RUNNING_SUM=x INFRA_MCP_ADMIN_PINNED=1 handover install; echo suite") == "suite\n"
+    out = sourced(setup + "RUNNING_SUM=x; handover install; echo suite")
+    assert out.endswith("relais [install --domain mcp.exemple.fr] 1\n")  # exec : pas de « suite »
 
 
 def test_unite_lit_le_fichier_local():
