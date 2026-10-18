@@ -282,11 +282,14 @@ sudo infra-mcp-admin update
      produit un *user-data* à coller à la création. La machine démarre avec les
      comptes admin, leurs clés et leur sudo, sans root ni mot de passe : elle
      n'est jamais accessible en root ;
-   - **sinon**, avec la clé publique du contrôleur pour root.
+   - **sinon**, avec la clé publique du contrôleur pour root, ou pour le compte
+     sudo de l'image (`ubuntu`, `debian`…) quand l'hébergeur refuse root ;
 3. `sudo infra-mcp-admin add-host <hôte>` :
    - vérifie que la machine est dans l'inventaire, fait confirmer l'empreinte
      de sa clé d'hôte ;
-   - se connecte avec le compte admin (cloud-init) ou, à défaut, en root ;
+   - se connecte avec le compte admin (cloud-init) ou, à défaut, en root, ou
+     avec le compte donné par `--bootstrap-user ubuntu`. Ce compte-là garde ses
+     accès (à lister dans `users_absent_*` pour le retirer) ;
    - lance `site` en simulation, montre le résultat, puis l'applique après
      confirmation ;
    - vérifie que le compte admin se connecte et que root est refusé : si le

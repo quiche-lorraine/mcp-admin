@@ -72,6 +72,18 @@ def test_sans_retrait(tmp_path):
     assert run_checks(tmp_path) == {"remove": [], "absent": []}
 
 
+def test_premier_passage_avec_un_autre_compte(tmp_path):
+    """add-host --bootstrap-user ubuntu : Ansible se connecte en ubuntu, mais les
+    garde-fous protègent le compte de l'inventaire (base_ansible_user)."""
+    bootstrap = {"ansible_user": "ubuntu", "base_ansible_user": "admin"}
+    run_checks(tmp_path, **bootstrap)
+    with pytest.raises(AssertionError, match="admin est le compte qu'utilise Ansible"):
+        run_checks(tmp_path, **bootstrap, admin_users_global=[{"name": "admin", "sudo": False, "ssh_keys": ["k"]}])
+    # Le compte de la connexion en cours n'est pas supprimé pendant qu'on s'en sert
+    with pytest.raises(AssertionError, match="ne peut pas contenir ubuntu"):
+        run_checks(tmp_path, **bootstrap, users_absent_host=["ubuntu"])
+
+
 def test_restreindre_une_source(tmp_path):
     # Cas réel : un port ouvert à tous, qu'on ne veut plus ouvrir qu'à un sous-réseau.
     out = run_checks(

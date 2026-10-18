@@ -1,6 +1,6 @@
 namespace: infra_mcp
 name: core
-version: 0.3.1
+version: 0.3.2
 readme: README.md
 authors: [infra-mcp]
 description: Socle Ansible d'infra-mcp (serveur de base, Docker, Swarm, stacks) et ses garde-fous

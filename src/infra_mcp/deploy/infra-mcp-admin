@@ -5,7 +5,7 @@
 #
 #   infra-mcp-admin install [--repo <url du repo de config>] [--domain <nom>] [--tool <spec pip>]
 #   infra-mcp-admin update [--tool <spec pip>]
-#   infra-mcp-admin add-host <hôte> [--bootstrap-user root]
+#   infra-mcp-admin add-host <hôte> [--bootstrap-user <compte>]   (root par défaut, ou ubuntu, debian…)
 #   infra-mcp-admin cloud-init <hôte>
 #
 # install fait tout, en posant ses questions au fur et à mesure (repo s'il n'est
@@ -298,6 +298,13 @@ inventory_hosts() {
 import json, sys
 for host, hv in sorted(json.load(sys.stdin)["_meta"]["hostvars"].items()):
     print(host, hv.get("ansible_host", host), hv.get("ansible_port", 22))'
+}
+
+# Compte d'Ansible d'un hôte d'après l'inventaire (root par défaut).
+inventory_user() {
+    as_service "$(ansible_bin ansible-inventory)" --host "$1" | "$VENV/bin/python" -c '
+import json, sys
+print(json.load(sys.stdin).get("ansible_user", "root"))'
 }
 
 # Toutes les clés d'hôte inconnues du parc, confirmées en une fois.
@@ -812,7 +819,7 @@ ping_as() {
 
 cmd_add_host() {
     local host=$1
-    [[ -n $host ]] || die "usage : $0 add-host <hôte> [--bootstrap-user root]"
+    [[ -n $host ]] || die "usage : $0 add-host <hôte> [--bootstrap-user <compte>]"
     [[ -d $REPO_DIR/.git ]] || die "contrôleur non installé"
     say "Machine $host"
     as_service "$(ansible_bin ansible-inventory)" --host "$host" >/dev/null 2>&1 \
@@ -826,8 +833,16 @@ cmd_add_host() {
     if ping_as "$host"; then
         info "connexion avec le compte admin : ok (machine préparée par cloud-init, ou déjà passée)"
     elif ping_as "$host" -e "ansible_user=$BOOTSTRAP_USER"; then
-        info "connexion en $BOOTSTRAP_USER : ok, le socle va créer les comptes admin puis fermer cet accès"
-        extra=(-e "ansible_user=$BOOTSTRAP_USER")
+        local admin
+        admin=$(inventory_user "$host") || die "compte d'Ansible de $host illisible dans l'inventaire"
+        if [[ $BOOTSTRAP_USER == root ]]; then
+            info "connexion en root : ok, le socle va créer les comptes admin puis fermer cet accès"
+        else
+            info "connexion en $BOOTSTRAP_USER : ok, le socle va créer les comptes admin (Ansible passera ensuite par $admin)"
+            info "$BOOTSTRAP_USER garde ses accès : à lister dans users_absent_* pour le retirer"
+        fi
+        # Les garde-fous du socle protègent le compte de l'inventaire, pas celui du premier passage.
+        extra=(-e "ansible_user=$BOOTSTRAP_USER" -e "base_ansible_user=$admin")
     else
         warn "aucune connexion possible, ni avec le compte admin ni en $BOOTSTRAP_USER."
         warn "Crée la machine avec cette clé publique (accès $BOOTSTRAP_USER), ou avec le user-data de"
