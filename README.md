@@ -169,22 +169,26 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
 
 ## Installation sur le contrôleur
 
-Une seule commande, en root sur le contrôleur (Debian ou Ubuntu), depuis une
-session SSH :
+Une seule commande, sur le contrôleur (Debian ou Ubuntu), depuis une session
+SSH :
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/main/install.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/main/install.sh)"
 ```
 
 Le script pose ses questions au fur et à mesure, sans jamais demander de
 relancer. On peut aussi y répondre d'avance :
-`... | sudo bash -s -- --repo quiche-lorraine/infra --domain mcp.exemple.fr`.
+`sudo bash -c "$(curl -fsSL …/install.sh)" -- --repo quiche-lorraine/infra --domain mcp.exemple.fr`.
 Il peut être relancé autant de fois que voulu : il ne refait que ce qui manque.
+
+Pas de `curl … | sudo bash` : `sudo` lance alors la commande hors du premier
+plan du terminal, et la première saisie ou le premier `apt` la suspend sans
+rien afficher. `install.sh` le détecte et donne la bonne commande.
 
 `install.sh` récupère `infra-mcp-admin` sur `main` et lui passe la main. Dès
 que le repo de config est cloné, la suite se fait avec `infra-mcp-admin` à la
 version que ce repo fige (`requirements.txt`). Pour lire le script avant de
-l'exécuter : remplacer `| sudo bash` par `> install.sh`.
+l'exécuter : `curl -fsSLO …/install.sh`, puis `sudo bash install.sh`.
 
 `install` :
 1. crée le compte `infra-mcp`, ses dossiers et sa clé SSH vers le parc ;
