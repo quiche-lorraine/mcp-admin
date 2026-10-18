@@ -1,5 +1,6 @@
 """Script infra-mcp-admin, unités systemd livrées avec le paquet, user-data cloud-init."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -38,8 +39,31 @@ def test_install_sh():
     # Récupère le script à son emplacement dans le repo, puis lui passe la main
     assert "/src/infra_mcp/deploy/infra-mcp-admin" in text
     assert SCRIPT.relative_to(INSTALL.parent).as_posix() == "src/infra_mcp/deploy/infra-mcp-admin"
-    # Sûr à travers « curl | bash » : rien ne s'exécute avant la dernière ligne
+    # Sûr à travers un tube : rien ne s'exécute avant la dernière ligne
     assert text.rstrip().splitlines()[-1] == 'main "$@"'
+    # Refuse de tourner hors du premier plan du terminal (curl | sudo bash)
+    assert 'pgid != "$tpgid"' in text
+
+
+@pytest.mark.skipif(not shutil.which("script") or os.geteuid() != 0, reason="script(1) et root requis")
+@pytest.mark.parametrize("command, ok", [("cat {copy} | bash -s -- --repo x/y", True),
+                                         ("bash -c \"$(cat {copy})\" -- --repo x/y", True),
+                                         ("cat {copy} | setsid -w bash -s -- --repo x/y", False)])
+def test_install_sh_terminal(tmp_path, command, ok):
+    # infra-mcp-admin remplacé par un script qui touche au terminal comme apt et
+    # la saisie du mot de passe vault (tcsetattr, lecture).
+    stub = tmp_path / "stub"
+    stub.write_text('#!/bin/bash\nstty -echo; stty echo\nread -r -p "? " a\necho "OK [$a] [$*]"\n')
+    copy = tmp_path / "install.sh"
+    copy.write_text(INSTALL.read_text().replace(
+        "https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/$ref/src/infra_mcp/deploy/infra-mcp-admin",
+        f"file://{stub}"))
+    res = subprocess.run(["script", "-qec", command.format(copy=copy), "/dev/null"],
+                         input="rep\n", capture_output=True, text=True, timeout=30)
+    if ok:
+        assert "OK [rep] [install --repo x/y]" in res.stdout, res.stdout
+    else:
+        assert "OK" not in res.stdout and res.returncode != 0
 
 
 def sourced(code: str) -> str:
