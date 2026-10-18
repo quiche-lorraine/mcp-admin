@@ -2,6 +2,10 @@
 # chacune décrite par stacks/<nom>/compose.yml, à côté du dossier d'inventaire
 # du repo de config (surchargeable avec stacks_dir).
 #
+# Les réseaux de swarm_networks sont créés ici, chiffrés, pour que plusieurs
+# stacks s'y branchent (external: true) : un reverse proxy et les services qu'il
+# expose. Ce sont les seuls réseaux external acceptés.
+#
 # docker_stack ne gère pas le check mode : en plan, il serait simplement sauté.
 # Chaque service porte donc le label infra.stack-hash (empreinte du compose) ; en
 # plan, on le compare à celui des services qui tournent pour annoncer les
@@ -12,6 +16,7 @@
   become: true
   vars:
     stacks_path: "{{ stacks_dir | default(inventory_dir ~ '/../stacks') }}"
+    stacks_networks: "{{ swarm_networks | default([]) }}"
   pre_tasks:
     - name: Noms des variables vault
       ansible.builtin.import_tasks: tasks/vault-names.yml
@@ -37,6 +42,16 @@
         quiet: true
       vars:
         _conflict: "{{ swarm_stacks | map(attribute='name') | intersect(swarm_stacks_absent) }}"
+
+    - name: Les réseaux partagés ont un nom valide
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item is match('^[a-z0-9][a-z0-9_-]*$')
+          - item not in ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge']
+        fail_msg: "swarm_networks : nom invalide ou réservé : {{ item }}"
+        quiet: true
+      loop: "{{ stacks_networks }}"
 
     - name: Les secrets utilisés sont déclarés dans swarm_secrets
       ansible.builtin.assert:
@@ -75,6 +90,20 @@
           {{ dict(stacks_secrets.results | map(attribute='item.key')
                   | zip(stacks_secrets.results | map(attribute='secret_name', default='(nouveau)'))) }}
 
+    # --- Réseaux partagés ---------------------------------------------------------
+    # Retirer un réseau de swarm_networks ne le supprime pas. Un réseau du même nom
+    # créé sans chiffrement est recréé chiffré, ce qui échoue tant qu'un service
+    # l'utilise : retire d'abord les stacks qui y sont branchées.
+
+    - name: Réseaux partagés
+      community.docker.docker_network:
+        name: "{{ item }}"
+        driver: overlay
+        scope: swarm
+        driver_options:
+          encrypted: "true"
+      loop: "{{ stacks_networks }}"
+
     # --- Stacks -------------------------------------------------------------------
 
     - name: Lecture des compose
@@ -85,16 +114,29 @@
                'secrets': item.secrets | default([]),
                'compose': _compose,
                'services': _compose.services.keys() | list,
-               'networks': (_compose.networks | default({}, true)).keys() | list,
+               'networks': _networks | rejectattr('value.external', 'true') | map(attribute='key') | list,
+               'external_networks': _networks | selectattr('value.external', 'true') | map(attribute='key') | list,
                'hash': (_text ~ (item.secrets | default([]) | to_json) ~ _override) | hash('sha256'),
              }] }}
       vars:
         _text: "{{ lookup('ansible.builtin.file', stacks_path ~ '/' ~ item.name ~ '/compose.yml') }}"
         _compose: "{{ _text | from_yaml }}"
+        _networks: "{{ _compose.networks | default({}, true) | dict2items }}"
         # Ce que le socle ajoute au compose fait partie de l'empreinte : une nouvelle
         # version de l'outil qui le change annonce un redéploiement en plan.
         _override: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/templates/stack-override.yml.j2') }}"
       loop: "{{ swarm_stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Les réseaux external sont déclarés dans swarm_networks
+      ansible.builtin.assert:
+        that: _missing | length == 0
+        fail_msg: "stack {{ item.name }} : réseaux external absents de swarm_networks : {{ _missing | join(', ') }}"
+        quiet: true
+      vars:
+        _missing: "{{ item.external_networks | difference(stacks_networks) }}"
+      loop: "{{ stacks_resolved | default([]) }}"
       loop_control:
         label: "{{ item.name }}"
 

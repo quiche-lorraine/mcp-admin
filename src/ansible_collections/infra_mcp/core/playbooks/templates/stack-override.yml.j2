@@ -14,7 +14,8 @@ secrets:
     name: "{{ stacks_secret_versions[secret] }}"
 {% endfor %}
 {% endif %}
-{# Trafic entre nœuds chiffré (IPsec) : réseau par défaut et réseaux déclarés. #}
+{# Trafic entre nœuds chiffré (IPsec) : réseau par défaut et réseaux déclarés.
+   Les réseaux partagés (external) sont créés chiffrés par le playbook. #}
 networks:
 {% for network in (['default'] + stack.networks) | unique %}
   {{ network }}:
