@@ -161,7 +161,15 @@ trust_host() {
 step_repo() {
     say "Repo de config ($REPO_DIR)"
     if [[ -d $REPO_DIR/.git ]]; then
-        as_service git pull --ff-only --quiet && info "à jour : $(as_service git log -1 --format='%h %s')"
+        # Le contrôleur ne suit que sa branche. Avec celles des PR en cours, git
+        # pull --ff-only peut refuser (« Cannot fast-forward to multiple
+        # branches », vu avec git 2.53), et le timer infra-mcp-sync avec lui.
+        local branch
+        branch=$(as_service git symbolic-ref --short HEAD) || die "repo de config : pas sur une branche ($REPO_DIR)"
+        as_service git config remote.origin.fetch "+refs/heads/$branch:refs/remotes/origin/$branch"
+        # Sans le repo à jour, la suite installerait l'outil d'une version périmée.
+        as_service git pull --ff-only --quiet || die "repo de config : git pull a échoué ($REPO_DIR)"
+        info "à jour : $(as_service git log -1 --format='%h %s')"
         return
     fi
     if [[ -z ${REPO:-} ]]; then
@@ -203,7 +211,7 @@ step_repo() {
         fi
     done
     rm -f "$err"
-    runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git clone --quiet "$REPO" "$REPO_DIR"
+    runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" git clone --quiet --single-branch "$REPO" "$REPO_DIR"
     info "cloné : $(as_service git log -1 --format='%h %s')"
 }
 
