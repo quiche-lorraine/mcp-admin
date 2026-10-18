@@ -36,9 +36,11 @@
       register: _swarm
       no_log: true
 
+    # En plan, un swarm pas encore initialisé n'a pas de token : rien à lire.
     - name: Garde le token worker en mémoire pour la suite
       ansible.builtin.set_fact:
-        swarm_worker_token: "{{ _swarm.swarm_facts.JoinTokens.Worker }}"
+        swarm_worker_token: >-
+          {{ ((_swarm.swarm_facts | default({}, true)).JoinTokens | default({}, true)).Worker | default('') }}
       no_log: true
 
 - name: Fait rejoindre les workers, un par un
