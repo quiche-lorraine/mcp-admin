@@ -158,3 +158,15 @@ def test_playbooks_du_socle():
         assert path.is_file(), path
         assert "name: Rapport" in path.read_text(), path
         assert lint.real_execution_violations(path) == [], path
+
+
+async def test_repo_hors_lint_rien_n_est_execute(monkeypatch):
+    """Comme plan et apply : un repo déployé qui ne passe pas le lint bloque tout."""
+    from infra_mcp import runner
+
+    called = []
+    monkeypatch.setattr(lint, "run", lambda path: ["playbooks/x.yml : check_mode: False"])
+    monkeypatch.setattr(runner, "run", lambda *a, **k: called.append(a))
+    with pytest.raises(ToolError, match="ne passe pas infra-mcp lint"):
+        await m.run("status", {}, limit="all")
+    assert called == []

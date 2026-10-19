@@ -116,6 +116,9 @@ async def run(name: str, extra: dict, *, limit: str | None = None, check: bool =
     if check:
         args.append("--check")
     env = {"ANSIBLE_STDOUT_CALLBACK": "ansible.posix.json"}
+    # Les opérations chargent l'inventaire et les variables du repo déployé : mêmes
+    # garde-fous que plan et apply avant d'exécuter quoi que ce soit.
+    await runner.check_repo()
     if write:
         # Une action à la fois sur le parc, verrou partagé avec apply.
         if runner._apply_lock.locked():

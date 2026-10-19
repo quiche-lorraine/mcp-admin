@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from infra_mcp import config, server
+from infra_mcp import config, runner, server
 from test_stacks_e2e import _swarm_active, docker
 
 pytestmark = pytest.mark.skipif(not _swarm_active(), reason="pas de swarm local (docker swarm init)")
@@ -28,6 +28,10 @@ def _apt_python() -> str | None:
     for candidate in ("/usr/bin/python3", *sorted(map(str, Path("/usr/bin").glob("python3.[0-9]*")))):
         if subprocess.run([candidate, "-c", "import apt_pkg"], capture_output=True).returncode == 0:
             return candidate
+    return None
+
+
+async def _no_check():
     return None
 
 
@@ -58,8 +62,12 @@ def infra(tmp_path_factory):
         "image": "traefik/whoami:v1.10.3", "deploy": {"replicas": 2}}}}))
     docker("stack", "deploy", "--detach=false", "-c", str(compose), STACK)
     previous, config.ANSIBLE_DIR = config.ANSIBLE_DIR, root
+    # L'inventaire de test joint le manager en local (ansible_connection), ce que le
+    # lint refuse à juste titre dans un vrai repo de config : le contrôle est testé
+    # à part (test_maintenance.py), il est court-circuité ici.
+    check_repo, runner.check_repo = runner.check_repo, _no_check
     yield root
-    config.ANSIBLE_DIR = previous
+    config.ANSIBLE_DIR, runner.check_repo = previous, check_repo
     subprocess.run(["docker", "stack", "rm", STACK], capture_output=True)
 
 

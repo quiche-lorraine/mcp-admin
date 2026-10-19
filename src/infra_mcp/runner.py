@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastmcp.exceptions import ToolError
 
-from . import config
+from . import config, lint
 
 # Noms d'hôtes, de groupes, ou liste séparée par des virgules. Pas de « @fichier »,
 # pas de motifs exotiques : on cible ce qui est déclaré dans l'inventaire, rien d'autre.
@@ -22,6 +22,9 @@ _SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault)", re.
 
 _apply_lock = asyncio.Lock()
 _plan_slots = asyncio.Semaphore(config.MAX_PLANS)
+# Lectures de l'inventaire (ansible-inventory) : accessibles avec un token read,
+# bornées elles aussi pour ne pas saturer le contrôleur.
+_inventory_slots = asyncio.Semaphore(config.MAX_INVENTORY)
 
 
 def check_limit(limit: str) -> str:
@@ -121,21 +124,45 @@ def recap(output: str) -> dict:
     return result
 
 
+async def _inventory(*args: str) -> dict:
+    if _inventory_slots.locked():
+        raise ToolError(f"déjà {config.MAX_INVENTORY} lectures de l'inventaire en cours, réessaie plus tard")
+    async with _inventory_slots:
+        return await run(_bin("ansible-inventory"), *args, timeout=60)
+
+
 async def inventory_graph() -> str:
-    res = await run(_bin("ansible-inventory"), "--graph", timeout=60)
+    res = await _inventory("--graph")
     return _truncate(res["output"])
 
 
 async def host_vars(host: str) -> dict:
     check_limit(host)
-    res = await run(_bin("ansible-inventory"), "--host", host, timeout=60)
+    res = await _inventory("--host", host)
     if res["returncode"] != 0:
         raise ToolError(_truncate(res["output"]))
     return redact(json.loads(res["output"]))
 
 
+async def check_repo() -> None:
+    """Les garde-fous de infra-mcp lint, sur le repo tel qu'il est déployé.
+
+    La CI les applique aux PR, mais un commit peut arriver autrement (push direct,
+    branche non protégée, modification à la main sur le contrôleur). Sans eux, plan
+    (token read) pourrait exécuter pour de vrai une tâche check_mode: false."""
+    problems = await asyncio.to_thread(lint.run, config.ANSIBLE_DIR)
+    if problems:
+        shown = "\n".join(problems[:10])
+        more = f"\n… et {len(problems) - 10} autre(s)" if len(problems) > 10 else ""
+        raise ToolError(
+            f"le repo déployé ne passe pas infra-mcp lint ({len(problems)} problème(s)) : "
+            f"rien n'est exécuté.\n{shown}{more}"
+        )
+
+
 async def playbook(name: str, limit: str, check: bool) -> dict:
     args = [_bin("ansible-playbook"), playbook_path(name), "--limit", check_limit(limit), "--diff"]
+    await check_repo()
     if check:
         args.append("--check")
         if _plan_slots.locked():

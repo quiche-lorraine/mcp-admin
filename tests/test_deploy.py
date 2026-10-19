@@ -100,7 +100,8 @@ def test_handover(tmp_path):
 
 
 def test_repo_suit_sa_seule_branche(tmp_path):
-    """update ne récupère que la branche suivie, et s'arrête si le pull échoue."""
+    """update ne récupère que la branche suivie, sans avancer le repo (step_sync le
+    fera après le lint), et s'arrête si la récupération échoue."""
     origin, repo = tmp_path / "origin.git", tmp_path / "repo"
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
     subprocess.run([*git, "init", "-q", "--bare", str(origin)], check=True)
@@ -112,14 +113,23 @@ def test_repo_suit_sa_seule_branche(tmp_path):
     subprocess.run([*git, "-C", str(repo), "checkout", "-q", "main"], check=True)
     subprocess.run([*git, "-C", str(repo), "branch", "-q", "-u", "origin/main"], check=True)
     setup = f'REPO_DIR="{repo}"; as_service() {{ (cd "$REPO_DIR" && "$@"); }}; '
-    assert "à jour" in sourced(setup + "step_repo")
+    assert "à venir" not in sourced(setup + "step_repo")
     fetch = subprocess.run(["git", "-C", str(repo), "config", "--get-all", "remote.origin.fetch"],
                            capture_output=True, text=True, check=True).stdout
     assert fetch == "+refs/heads/main:refs/remotes/origin/main\n"
+    # Un nouveau commit sur main : récupéré et annoncé, mais le repo ne bouge pas.
+    other = tmp_path / "other"
+    subprocess.run([*git, "clone", "-q", "-b", "main", str(origin), str(other)], check=True, capture_output=True)
+    subprocess.run([*git, "-C", str(other), "commit", "-q", "--allow-empty", "-m", "nouveau"], check=True)
+    subprocess.run([*git, "-C", str(other), "push", "-q", "origin", "main"], check=True, capture_output=True)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    out = sourced(setup + 'step_repo; echo "cible=$SYNC_TARGET"')
+    assert "à venir" in out and "nouveau" in out and "cible=origin/main" in out
+    assert subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout == head
     shutil.rmtree(origin)
     res = subprocess.run(["bash", "-c", f'source "{SCRIPT}"; {setup}step_repo; echo suite'],
                          capture_output=True, text=True)
-    assert res.returncode != 0 and "suite" not in res.stdout and "git pull a échoué" in res.stderr
+    assert res.returncode != 0 and "suite" not in res.stdout and "git fetch a échoué" in res.stderr
 
 
 def test_inventory_user(tmp_path):
@@ -203,3 +213,39 @@ def test_outil_reinstalle_a_chaque_commit():
     # pip garderait l'ancien et update ne mettrait rien à jour.
     step = SCRIPT.read_text().split("step_tool() {", 1)[1].split("\n}\n", 1)[0]
     assert '--force-reinstall --no-deps "${spec[@]}"' in step
+
+
+@pytest.mark.parametrize(
+    "content, ok",
+    [
+        ("# outil\ninfra-mcp @ git+https://github.com/quiche-lorraine/mcp-admin@" + "a" * 40 + "\n", True),
+        ("infra-mcp==0.2.0\n", True),
+        ("infra-mcp @ git+https://github.com/quiche-lorraine/mcp-admin@main\n", False),  # pas figé
+        ("infra-mcp @ git+https://evil.example/mcp-admin@" + "a" * 40 + "\n", False),
+        ("infra-mcp==0.2.0\nrequests\n", False),  # paquet tiers
+        ("--index-url https://evil.example/simple\ninfra-mcp==0.2.0\n", False),
+        ("-e git+https://github.com/x/y@" + "a" * 40 + "#egg=infra-mcp\n", False),
+        ("", False),
+    ],
+)
+def test_requirements_verifie_avant_pip(tmp_path, content, ok):
+    req = tmp_path / "requirements.txt"
+    req.write_text(content)
+    res = subprocess.run(["bash", "-c", f'source "{SCRIPT}"; check_requirements "{req}"'], capture_output=True, text=True)
+    assert (res.returncode == 0) == ok, res.stderr
+
+
+def test_synchro_conditionnee_par_le_lint():
+    unit = (DEPLOY / "infra-mcp-sync.service").read_text()
+    assert "ExecStart=/opt/infra-mcp/venv/bin/infra-mcp sync /opt/infra" in unit
+    assert "git pull" not in unit
+    # update et install passent aussi par le lint avant d'avancer le repo
+    script = SCRIPT.read_text()
+    assert "git pull" not in script.split("step_repo() {", 1)[1].split("\n}\n", 1)[0]
+    assert script.count("    step_sync\n") == 2
+
+
+def test_rotation_du_journal_d_audit():
+    conf = (DEPLOY / "infra-mcp.logrotate").read_text()
+    assert "/var/log/infra-mcp/*.jsonl" in conf and "su infra-mcp infra-mcp" in conf
+    assert "infra-mcp.logrotate" in SCRIPT.read_text()

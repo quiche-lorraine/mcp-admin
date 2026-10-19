@@ -1,4 +1,4 @@
-"""infra-mcp serve | lint [dossier] | cloud-init <hôte> | token create <read|write> <label> | token list | token revoke <id>"""
+"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | token create <read|write> <label> | token list | token revoke <id>"""
 
 import argparse
 import json
@@ -14,6 +14,8 @@ def main() -> None:
     sub.add_parser("serve", help="lance le serveur MCP (Streamable HTTP)")
     lint_cmd = sub.add_parser("lint", help="vérifie les garde-fous d'un repo de config Ansible")
     lint_cmd.add_argument("ansible_dir", nargs="?", type=Path, help="défaut : INFRA_MCP_ANSIBLE_DIR")
+    sync_cmd = sub.add_parser("sync", help="avance le repo de config au dernier commit de sa branche, s'il passe le lint")
+    sync_cmd.add_argument("ansible_dir", nargs="?", type=Path, help="défaut : INFRA_MCP_ANSIBLE_DIR")
     ci_cmd = sub.add_parser("cloud-init", help="user-data cloud-init pour une nouvelle machine de l'inventaire")
     ci_cmd.add_argument("host")
 
@@ -47,6 +49,13 @@ def main() -> None:
         try:
             print(user_data(args.host, json.loads(res.stdout)), end="")
         except ValueError as exc:
+            sys.exit(str(exc))
+    elif args.cmd == "sync":
+        from .sync import SyncError, sync
+
+        try:
+            print(sync(args.ansible_dir or config.ANSIBLE_DIR))
+        except SyncError as exc:
             sys.exit(str(exc))
     elif args.cmd == "lint":
         from . import lint

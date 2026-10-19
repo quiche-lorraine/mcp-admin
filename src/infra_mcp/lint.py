@@ -344,7 +344,7 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     if not isinstance(config.get("swarm_networks") or [], list):
         found.append("swarm_networks : liste de noms de réseaux attendue")
     for net in _shared_networks(config):
-        if not isinstance(net, str) or not NETWORK_NAME_RE.match(net) or net in RESERVED_NETWORKS:
+        if not isinstance(net, str) or not NETWORK_NAME_RE.fullmatch(net) or net in RESERVED_NETWORKS:
             found.append(f"swarm_networks : nom invalide ou réservé : {net!r}")
     declared = set((config.get("swarm_secrets") or {}).keys())
     names = [s["name"] for s in config.get("swarm_stacks") or []]

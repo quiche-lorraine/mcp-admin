@@ -6,6 +6,18 @@
   stack_status, updates, reboot, restart_service, stack_restart, docker_prune),
   lancés par les outils MCP du même nom (docs/maintenance.md).
 
+## 0.3.3
+
+- `stacks` : les options d'un réseau propre à une stack (`internal`, `driver`,
+  `labels`…) sont conservées. `docker stack deploy` remplace la définition d'un
+  réseau d'un fichier compose à l'autre : la surcharge qui ajoute le
+  chiffrement les effaçait. Elle reprend désormais la définition du compose.
+- `stacks` : un réseau déclaré avec des options mais sans `external`, ou sans
+  définition (`null`), ne fait plus échouer la lecture des compose.
+- `swarm_networks` : noms validés en entier (`fullmatch`).
+- Les stacks sont annoncées à redéployer en plan après cette mise à jour
+  (l'empreinte inclut la surcharge).
+
 ## 0.3.2
 
 - Garde-fous du rôle `base` : le compte d'Ansible protégé est celui de

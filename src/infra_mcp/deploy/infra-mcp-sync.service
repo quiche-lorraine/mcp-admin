@@ -1,8 +1,27 @@
 [Unit]
-Description=infra-mcp - met à jour le repo Ansible depuis Git
+Description=infra-mcp - met à jour le repo Ansible depuis Git, s'il passe infra-mcp lint
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=infra-mcp
+Group=infra-mcp
 WorkingDirectory=/opt/infra
-ExecStart=/usr/bin/git pull --ff-only --quiet
+# Le nouveau commit est vérifié à part ; s'il ne passe pas les garde-fous, le
+# repo reste où il est et le service apparaît en échec (systemctl --failed,
+# journalctl -u infra-mcp-sync).
+ExecStart=/opt/infra-mcp/venv/bin/infra-mcp sync /opt/infra
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/infra
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027
