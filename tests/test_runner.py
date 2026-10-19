@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -169,3 +170,47 @@ async def test_plans_simultanes_bornes(monkeypatch):
     release.set()
     assert [(await p)["returncode"] for p in plans] == [0] * config.MAX_PLANS
     assert (await runner.playbook("site", "all", check=True))["returncode"] == 0  # place libérée
+
+
+async def test_rien_n_est_execute_si_le_repo_ne_passe_pas_le_lint(monkeypatch, tmp_path):
+    # Un commit arrivé sans passer par la CI (push direct) : plan, accessible avec
+    # un token read, exécuterait pour de vrai la tâche check_mode: false.
+    repo = tmp_path / "infra"
+    shutil.copytree(config.ANSIBLE_DIR, repo)
+    (repo / "playbooks" / "site.yml").write_text(
+        "- hosts: all\n  tasks:\n    - name: piège\n      ansible.builtin.command: id\n      check_mode: false\n"
+    )
+    monkeypatch.setattr(config, "ANSIBLE_DIR", repo)
+    called = False
+
+    async def fake_run(*args, timeout=None):
+        nonlocal called
+        called = True
+        return {"returncode": 0, "output": ""}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    for check in (True, False):
+        with pytest.raises(ToolError, match="ne passe pas infra-mcp lint"):
+            await runner.playbook("site", "all", check=check)
+    assert not called
+
+
+async def test_lectures_d_inventaire_bornees(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    running = 0
+
+    async def fake_run(*args, timeout=None):
+        nonlocal running
+        running += 1
+        if running == config.MAX_INVENTORY:
+            started.set()
+        await release.wait()
+        return {"returncode": 0, "output": "{}"}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    reads = [asyncio.create_task(runner.host_vars("srv-01")) for _ in range(config.MAX_INVENTORY)]
+    await started.wait()
+    with pytest.raises(ToolError, match="lectures de l'inventaire en cours"):
+        await runner.inventory_graph()
+    release.set()
+    assert [await r for r in reads] == [{}] * config.MAX_INVENTORY

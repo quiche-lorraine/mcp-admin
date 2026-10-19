@@ -15,10 +15,13 @@ secrets:
 {% endfor %}
 {% endif %}
 {# Trafic entre nœuds chiffré (IPsec) : réseau par défaut et réseaux déclarés.
-   Les réseaux partagés (external) sont créés chiffrés par le playbook. #}
+   Les réseaux partagés (external) sont créés chiffrés par le playbook.
+   docker stack deploy remplace la définition d'un réseau d'un fichier à l'autre
+   au lieu de les fusionner : on reprend celle du compose (internal, driver,
+   labels…) en y ajoutant le chiffrement. #}
 networks:
 {% for network in (['default'] + stack.networks) | unique %}
-  {{ network }}:
-    driver_opts:
-      encrypted: "true"
+{%   set definition = stack.network_defs.get(network) %}
+{%   if definition is not mapping %}{% set definition = {} %}{% endif %}
+  {{ network }}: {{ definition | combine({'driver_opts': (definition.driver_opts | default({}, true)) | combine({'encrypted': 'true'})}) | to_json }}
 {% endfor %}
