@@ -1,0 +1,51 @@
+# Outil MCP stack_restart (token write) : relance les tâches d'une stack (ou d'un
+# seul de ses services) sans changer sa configuration. dry_run lance ce playbook
+# en check mode : les services sont listés, rien n'est relancé.
+
+- name: Relance d'une stack
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - maintenance_stack is match('^[a-z0-9][a-z0-9_-]*$')
+          - maintenance_service | default('', true) is match('^([a-z0-9][a-z0-9_.-]*)?$')
+        quiet: true
+
+    - name: Tâches de la stack
+      community.docker.docker_stack_task_info:
+        name: "{{ maintenance_stack }}"
+      register: _tasks
+
+    - name: Services visés
+      ansible.builtin.set_fact:
+        _services: >-
+          {{ [maintenance_stack ~ '_' ~ maintenance_service] if maintenance_service | default('', true)
+             else _all }}
+      vars:
+        # Nom d'une tâche : <stack>_<service>.<numéro ou id de nœud>
+        _all: "{{ _tasks.results | map(attribute='Name') | map('regex_replace', '\\.[^.]+$', '') | unique | sort }}"
+
+    - name: La stack et le service existent
+      ansible.builtin.assert:
+        that:
+          - _services | length > 0
+          - _services is subset(_tasks.results | map(attribute='Name') | map('regex_replace', '\\.[^.]+$', '') | list)
+        fail_msg: "stack {{ maintenance_stack }} ou service {{ maintenance_service | default('') }} introuvable"
+        quiet: true
+
+    - name: Relance
+      ansible.builtin.command:
+        argv: [docker, service, update, --force, --quiet, "{{ item }}"]
+      changed_when: true
+      loop: "{{ _services }}"
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          services: "{{ _services }}"
+          simulation: "{{ ansible_check_mode }}"

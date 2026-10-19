@@ -1,0 +1,50 @@
+# Outil MCP updates (token write) : mises à jour des paquets, sans redémarrage.
+# dry_run lance ce playbook en check mode : apt simule, unattended-upgrade est sauté.
+
+- name: Mises à jour des paquets
+  hosts: all
+  become: true
+  gather_facts: false
+  # needrestart liste les services à relancer sans les relancer : un redémarrage
+  # automatique d'infra-mcp ou de Docker couperait l'exécution en cours.
+  environment:
+    NEEDRESTART_MODE: l
+    DEBIAN_FRONTEND: noninteractive
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that: maintenance_mode in ['upgrade', 'security', 'dist-upgrade']
+        quiet: true
+
+    - name: Index des paquets
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Mise à jour des paquets
+      ansible.builtin.apt:
+        upgrade: "{{ 'dist' if maintenance_mode == 'dist-upgrade' else 'yes' }}"
+      register: _apt
+      when: maintenance_mode != 'security'
+
+    - name: Correctifs de sécurité
+      ansible.builtin.command:
+        argv: [unattended-upgrade, --verbose]
+      register: _security
+      changed_when: "'Packages that will be upgraded:' in _security.stdout"
+      when: maintenance_mode == 'security'
+
+    - name: Redémarrage requis
+      ansible.builtin.stat:
+        path: /run/reboot-required
+      register: _reboot_required
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          mode: "{{ maintenance_mode }}"
+          simulation: "{{ ansible_check_mode }}"
+          output: "{{ _apt.stdout_lines | default(_security.stdout_lines | default([])) }}"
+          reboot_required: "{{ _reboot_required.stat.exists }}"

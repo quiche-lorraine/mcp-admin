@@ -1,0 +1,62 @@
+# Outil MCP status (token read) : état des hôtes, en lecture seule.
+#
+# Les playbooks maintenance_* sont lancés par infra-mcp avec le callback JSON et
+# leurs paramètres en extra vars (le repo de config ne peut pas les surcharger).
+# Chacun finit par une tâche « Rapport » qui affiche maintenance_report : c'est
+# ce que le serveur lit, met en forme et renvoie à l'agent.
+
+- name: État des hôtes
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Unités systemd en échec
+      ansible.builtin.command:
+        argv: [systemctl, list-units, --state=failed, --plain, --no-legend, --no-pager]
+      register: _failed_units
+      changed_when: false
+      failed_when: false
+
+    - name: Mises à jour en attente
+      ansible.builtin.command:
+        argv: [apt, list, --upgradable]
+      register: _upgradable
+      changed_when: false
+      failed_when: false
+
+    - name: Redémarrage requis
+      ansible.builtin.stat:
+        path: /run/reboot-required
+      register: _reboot_required
+
+    - name: Paquets qui demandent le redémarrage
+      ansible.builtin.slurp:
+        src: /run/reboot-required.pkgs
+      register: _reboot_pkgs
+      when: _reboot_required.stat.exists
+      failed_when: false
+
+    - name: Charge
+      ansible.builtin.slurp:
+        src: /proc/loadavg
+      register: _loadavg
+
+    - name: Docker
+      community.docker.docker_host_info:
+      register: _docker
+      failed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          uptime_seconds: "{{ ansible_facts.uptime_seconds | default(none) }}"
+          loadavg: "{{ _loadavg.content | b64decode }}"
+          memory_mb: "{{ ansible_facts.memory_mb | default({}) }}"
+          mounts: "{{ ansible_facts.mounts | default([]) }}"
+          failed_units: "{{ _failed_units.stdout_lines | default([]) }}"
+          upgradable: "{{ _upgradable.stdout_lines | default([]) }}"
+          reboot_required: "{{ _reboot_required.stat.exists }}"
+          reboot_pkgs: "{{ (_reboot_pkgs.content | default('') | b64decode) if _reboot_required.stat.exists else '' }}"
+          docker: "{{ _docker.host_info | default(none) }}"

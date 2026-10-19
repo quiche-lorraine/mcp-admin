@@ -1,0 +1,59 @@
+# Outil MCP restart_service (token write) : redémarre une unité systemd, sauf ssh.
+# dry_run lance ce playbook en check mode.
+
+- name: Redémarrage d'un service
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    _unit: "{{ maintenance_service if '.' in maintenance_service else maintenance_service ~ '.service' }}"
+    _controller: "{{ (ansible_host | default(inventory_hostname)) in ['127.0.0.1', 'localhost', '::1'] }}"
+    # Redémarrer infra-mcp couperait l'exécution en cours : différé de quelques secondes.
+    _deferred: "{{ _controller and _unit == 'infra-mcp.service' }}"
+  tasks:
+    - name: Paramètres valides, ssh exclu
+      ansible.builtin.assert:
+        that:
+          - maintenance_service is match('^[A-Za-z0-9@_.:-]+$')
+          - _unit not in ['ssh.service', 'sshd.service', 'ssh.socket', 'sshd.socket']
+        fail_msg: "{{ _unit }} : nom invalide, ou service SSH (jamais redémarré : risque de perdre l'accès)"
+        quiet: true
+
+    - name: État avant
+      ansible.builtin.systemd_service:
+        name: "{{ _unit }}"
+      register: _before
+
+    - name: L'unité existe
+      ansible.builtin.assert:
+        that: _before.status.LoadState == 'loaded'
+        fail_msg: "{{ _unit }} : unité inconnue sur {{ inventory_hostname }}"
+        quiet: true
+
+    - name: Redémarrage différé d'infra-mcp
+      ansible.builtin.command:
+        argv: [systemd-run, --on-active=5, --collect, systemctl, restart, infra-mcp.service]
+      changed_when: true
+      when: _deferred
+
+    - name: Redémarrage
+      ansible.builtin.systemd_service:
+        name: "{{ _unit }}"
+        state: restarted
+      when: not _deferred
+
+    - name: État après
+      ansible.builtin.systemd_service:
+        name: "{{ _unit }}"
+      register: _after
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          unit: "{{ _unit }}"
+          deferred: "{{ _deferred }}"
+          simulation: "{{ ansible_check_mode }}"
+          active_state: "{{ _after.status.ActiveState }}"
+          sub_state: "{{ _after.status.SubState }}"

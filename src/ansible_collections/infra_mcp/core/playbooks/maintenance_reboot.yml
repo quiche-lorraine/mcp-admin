@@ -1,0 +1,84 @@
+# Outil MCP reboot (token write) : redémarrage, une machine à la fois, arrêt au
+# premier échec. dry_run lance ce playbook en check mode : rien ne redémarre.
+#
+# Le contrôleur (joint en local) fait tourner infra-mcp, et donc ce playbook : le
+# redémarrer couperait l'exécution. Son redémarrage est programmé dans une minute.
+
+- name: Redémarrage des hôtes
+  hosts: all
+  become: true
+  gather_facts: true
+  gather_subset: [min]
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    _controller: "{{ (ansible_host | default(inventory_hostname)) in ['127.0.0.1', 'localhost', '::1'] }}"
+    # Sur un swarm d'un seul nœud, le drain arrêterait toutes les stacks sans
+    # pouvoir les déplacer ailleurs.
+    _drain: "{{ inventory_hostname in groups.get('swarm', []) and groups['swarm'] | length > 1 }}"
+    _manager: "{{ groups.get('swarm_managers', []) | difference([inventory_hostname]) | first | default(inventory_hostname) }}"
+  tasks:
+    - name: Redémarrage requis
+      ansible.builtin.stat:
+        path: /run/reboot-required
+      register: _reboot_required
+
+    - name: Rien à faire
+      when: maintenance_only_if_required | bool and not _reboot_required.stat.exists
+      block:
+        - name: Rapport
+          ansible.builtin.debug:
+            var: maintenance_report
+          vars:
+            maintenance_report: {action: aucune, reason: pas de redémarrage requis}
+        - name: Hôte suivant
+          ansible.builtin.meta: end_host
+
+    - name: Contrôleur
+      when: _controller
+      block:
+        - name: Redémarrage différé du contrôleur
+          ansible.builtin.command:
+            argv: [shutdown, -r, +1, "infra-mcp : redémarrage demandé par l'outil reboot"]
+          changed_when: true
+        - name: Rapport
+          ansible.builtin.debug:
+            var: maintenance_report
+          vars:
+            maintenance_report:
+              action: redémarrage programmé dans une minute
+              simulation: "{{ ansible_check_mode }}"
+        - name: Hôte suivant
+          ansible.builtin.meta: end_host
+
+    - name: Nœud sorti du swarm (drain)
+      community.docker.docker_node:
+        hostname: "{{ ansible_facts.hostname }}"
+        availability: drain
+      delegate_to: "{{ _manager }}"
+      when: _drain
+
+    - name: Redémarrage
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        msg: "infra-mcp : redémarrage demandé par l'outil reboot"
+
+    - name: Nœud remis dans le swarm
+      community.docker.docker_node:
+        hostname: "{{ ansible_facts.hostname }}"
+        availability: active
+      delegate_to: "{{ _manager }}"
+      when: _drain
+      register: _active
+      until: _active is succeeded
+      retries: 10
+      delay: 15
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          action: redémarré
+          drain: "{{ _drain }}"
+          simulation: "{{ ansible_check_mode }}"

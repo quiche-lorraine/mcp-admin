@@ -1,0 +1,39 @@
+# Outil MCP logs, source docker:<stack>_<service> (token read) : fin des logs
+# d'un service Docker, lus depuis le premier manager du swarm.
+
+- name: Logs d'un service Docker
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - maintenance_service is match('^[a-z0-9][a-z0-9_.-]*$')
+          - maintenance_lines | int >= 1 and maintenance_lines | int <= 500
+          - maintenance_since is match('^[0-9]+[smhd]$')
+        quiet: true
+
+    - name: Logs
+      ansible.builtin.command:
+        argv:
+          - docker
+          - service
+          - logs
+          - --tail={{ maintenance_lines }}
+          - --since={{ maintenance_since }}
+          - --timestamps
+          - --no-trunc
+          - --no-task-ids
+          - "{{ maintenance_service }}"
+      register: _logs
+      changed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          # Les conteneurs écrivent sur les deux sorties : le serveur les fusionne
+          # par horodatage.
+          lines: "{{ _logs.stdout_lines + _logs.stderr_lines }}"
