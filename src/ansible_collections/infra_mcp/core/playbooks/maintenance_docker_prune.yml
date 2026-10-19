@@ -1,0 +1,50 @@
+# Outil MCP docker_prune (token write) : supprime les conteneurs arrêtés, les images
+# inutilisées et le cache de build. Jamais les volumes : ils contiennent des données.
+# dry_run lance ce playbook en check mode : seul l'espace récupérable est indiqué.
+
+- name: Nettoyage Docker
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Espace occupé
+      community.docker.docker_host_info:
+        disk_usage: true
+      register: _before
+      failed_when: false
+
+    - name: Hôte sans Docker
+      when: _before.host_info is not defined
+      block:
+        - name: Rapport
+          ansible.builtin.debug:
+            var: maintenance_report
+          vars:
+            maintenance_report: {action: aucune, reason: Docker absent ou injoignable}
+        - name: Hôte suivant
+          ansible.builtin.meta: end_host
+
+    - name: Nettoyage
+      community.docker.docker_prune:
+        containers: true
+        images: true
+        images_filters:
+          dangling: false
+        builder_cache: true
+        networks: false
+        volumes: false
+      register: _pruned
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          simulation: "{{ ansible_check_mode }}"
+          disk_usage: "{{ _before.disk_usage | default({}) }}"
+          containers: "{{ _pruned.containers | default([]) | length }}"
+          images: "{{ _pruned.images | default([]) | length }}"
+          reclaimed_bytes: >-
+            {{ (_pruned.containers_space_reclaimed | default(0) | int)
+               + (_pruned.images_space_reclaimed | default(0) | int)
+               + (_pruned.builder_cache_space_reclaimed | default(0) | int) }}

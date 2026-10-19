@@ -72,25 +72,28 @@ def _bin(name: str) -> str:
     return str(candidate) if candidate.exists() else name
 
 
-async def run(*args: str, timeout: int | None = None) -> dict:
+async def run(*args: str, timeout: int | None = None, env: dict | None = None,
+              separate_stderr: bool = False) -> dict:
+    """separate_stderr : la sortie JSON d'Ansible sur stdout, les avertissements à part."""
     env = {
         **os.environ,
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_RETRY_FILES_ENABLED": "0",
+        **(env or {}),
     }
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=config.ANSIBLE_DIR,
         env=env,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+        stderr=asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT,
         # Groupe de processus dédié : en cas de délai dépassé, on tue aussi les
         # workers et les connexions ssh qu'ansible-playbook a lancés.
         start_new_session=True,
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout or config.PLAYBOOK_TIMEOUT)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout or config.PLAYBOOK_TIMEOUT)
     except asyncio.TimeoutError:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -98,7 +101,11 @@ async def run(*args: str, timeout: int | None = None) -> dict:
             pass
         await proc.wait()  # sinon le processus reste zombie
         raise ToolError("délai dépassé, exécution interrompue")
-    return {"returncode": proc.returncode, "output": out.decode(errors="replace")}
+    return {
+        "returncode": proc.returncode,
+        "output": out.decode(errors="replace"),
+        "stderr": (err or b"").decode(errors="replace"),
+    }
 
 
 def recap(output: str) -> dict:

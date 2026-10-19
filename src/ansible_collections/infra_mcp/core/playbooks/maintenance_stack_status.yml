@@ -1,0 +1,23 @@
+# Outil MCP stack_status (token read) : tâches d'une stack, lues sur le premier manager.
+
+- name: État d'une stack
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that: maintenance_stack is match('^[a-z0-9][a-z0-9_-]*$')
+        quiet: true
+
+    - name: Tâches de la stack
+      community.docker.docker_stack_task_info:
+        name: "{{ maintenance_stack }}"
+      register: _tasks
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          tasks: "{{ _tasks.results }}"

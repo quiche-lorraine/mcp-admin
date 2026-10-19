@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Playbooks de maintenance `maintenance_*` (status, journal, service_logs,
+  stack_status, updates, reboot, restart_service, stack_restart, docker_prune),
+  lancés par les outils MCP du même nom (docs/maintenance.md).
+
 ## 0.3.3
 
 - `stacks` : les options d'un réseau propre à une stack (`internal`, `driver`,

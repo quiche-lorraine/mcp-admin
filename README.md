@@ -25,6 +25,19 @@ modèle générique, aussi utilisé par les tests.
 | `repo_status`    | read   | Commit actuellement déployé sur le contrôleur                |
 | `plan`           | read   | `--check --diff` : ce qui changerait, sans rien toucher      |
 | `apply`          | write  | Exécute un playbook du repo, `limit` obligatoire             |
+| `status`         | read   | État des hôtes : charge, disques, unités en échec, mises à jour en attente, redémarrage requis, Docker |
+| `logs`           | read   | Fin des logs d'une unité systemd ou d'un service Docker, secrets évidents masqués |
+| `stack_status`   | read   | Services d'une stack : répliques voulues et en cours, erreurs |
+| `updates`        | write  | Mises à jour des paquets (`upgrade`, `security` ou `dist-upgrade`), sans redémarrage |
+| `reboot`         | write  | Redémarrage un hôte à la fois (drain si le swarm a plusieurs nœuds ; contrôleur différé d'une minute) |
+| `restart_service`| write  | Redémarre une unité systemd, jamais ssh                      |
+| `stack_restart`  | write  | Relance les tâches d'une stack sans changer sa configuration |
+| `docker_prune`   | write  | Supprime conteneurs arrêtés, images inutilisées, cache de build ; jamais les volumes |
+
+Les outils de maintenance (de `status` à `docker_prune`) lancent des playbooks
+du socle (`infra_mcp.core.maintenance_*`), pas du repo de config, avec leurs
+paramètres validés en extra vars. Les actions acceptent `dry_run` (check mode)
+et partagent le verrou d'`apply`. Conception : [docs/maintenance.md](docs/maintenance.md).
 
 Volontairement absents : commande shell, tâche ad hoc, création de playbook,
 lecture des secrets. Le vault est déchiffré par Ansible au moment d'exécuter,

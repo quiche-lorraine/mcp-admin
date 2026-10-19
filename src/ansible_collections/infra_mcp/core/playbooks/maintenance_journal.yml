@@ -1,0 +1,33 @@
+# Outil MCP logs, source unit:<nom> (token read) : fin du journal d'une unité systemd.
+
+- name: Journal d'une unité systemd
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - maintenance_unit is match('^[A-Za-z0-9@_.:-]+$')
+          - maintenance_lines | int >= 1 and maintenance_lines | int <= 500
+          - maintenance_since is match('^[0-9]+[smhd]$')
+        quiet: true
+
+    - name: Journal
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit={{ maintenance_unit }}
+          - --lines={{ maintenance_lines }}
+          - --since=-{{ maintenance_since }}
+          - --no-pager
+          - --output=short-iso
+      register: _journal
+      changed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          lines: "{{ _journal.stdout_lines }}"

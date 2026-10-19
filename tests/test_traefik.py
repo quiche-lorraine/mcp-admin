@@ -194,11 +194,20 @@ def test_unite_traefik():
 def test_processus_reel(tmp_path):
     import subprocess
     import sys
+    import time
+    from pathlib import Path
 
     conf = tmp_path / "traefik.yml"
     conf.write_text("providers:\n  file:\n    directory: /srv/routes\n")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", f"--configFile={conf}"])
     try:
+        # Juste après le lancement, /proc/<pid>/cmdline peut être encore vide (exec en
+        # cours) : on attend qu'il soit visible, comme pour un Traefik déjà démarré.
+        cmdline = Path(f"/proc/{child.pid}/cmdline")
+        for _ in range(100):
+            if cmdline.read_bytes():
+                break
+            time.sleep(0.05)
         facts = traefik.process_facts(child.pid)
     finally:
         child.kill()
