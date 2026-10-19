@@ -1,0 +1,12 @@
+# Journal d'audit d'infra-mcp (un appel d'outil par ligne) : un an conservé.
+# Le serveur rouvre le fichier à chaque écriture, la rotation par renommage suffit.
+/var/log/infra-mcp/*.jsonl {
+    weekly
+    rotate 52
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su infra-mcp infra-mcp
+    create 0600 infra-mcp infra-mcp
+}

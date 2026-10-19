@@ -47,7 +47,7 @@
       ansible.builtin.assert:
         that:
           - item is string
-          - item is match('^[a-z0-9][a-z0-9_-]*$')
+          - item is regex('[a-z0-9][a-z0-9_-]*', match_type='fullmatch')
           - item not in ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge']
         fail_msg: "swarm_networks : nom invalide ou réservé : {{ item }}"
         quiet: true

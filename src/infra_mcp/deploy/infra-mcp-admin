@@ -167,9 +167,14 @@ step_repo() {
         local branch
         branch=$(as_service git symbolic-ref --short HEAD) || die "repo de config : pas sur une branche ($REPO_DIR)"
         as_service git config remote.origin.fetch "+refs/heads/$branch:refs/remotes/origin/$branch"
-        # Sans le repo à jour, la suite installerait l'outil d'une version périmée.
-        as_service git pull --ff-only --quiet || die "repo de config : git pull a échoué ($REPO_DIR)"
-        info "à jour : $(as_service git log -1 --format='%h %s')"
+        # Récupéré seulement : le repo n'avance qu'après le lint (step_sync), fait
+        # par l'outil à la version que le nouveau commit demande (step_tool).
+        as_service git fetch --quiet origin || die "repo de config : git fetch a échoué ($REPO_DIR)"
+        SYNC_TARGET="origin/$branch"
+        info "déployé : $(as_service git log -1 --format='%h %s')"
+        if [[ $(as_service git rev-parse HEAD) != $(as_service git rev-parse "$SYNC_TARGET") ]]; then
+            info "à venir : $(as_service git log -1 --format='%h %s' "$SYNC_TARGET")"
+        fi
         return
     fi
     if [[ -z ${REPO:-} ]]; then
@@ -232,20 +237,64 @@ step_tool() {
     [[ -x $VENV/bin/python ]] || info "première installation d'Ansible : plusieurs minutes sur une petite machine"
     [[ -x $VENV/bin/python ]] || python3 -m venv "$VENV"
     "$VENV/bin/pip" install --quiet --upgrade pip
-    local spec=(-r "$REPO_DIR/requirements.txt")
+    # La version demandée par le commit à venir (update), sinon par le commit déployé.
+    local req
+    req=$(mktemp)
+    local spec=(-r "$req")
     if [[ -n ${TOOL:-} ]]; then
         warn "version imposée par --tool : $TOOL (et non celle de requirements.txt)"
         spec=("$TOOL")
+    else
+        as_service git show "${SYNC_TARGET:-HEAD}:requirements.txt" >"$req" || die "requirements.txt illisible dans le repo de config"
+        check_requirements "$req"
     fi
     "$VENV/bin/pip" install --quiet "${spec[@]}"
     # Le numéro de version ne change pas d'un commit à l'autre : sans réinstallation
     # forcée, pip garderait l'outil déjà installé. Dépendances non retouchées.
     "$VENV/bin/pip" install --quiet --force-reinstall --no-deps "${spec[@]}"
+    rm -f "$req"
     local commit
     commit=$("$VENV/bin/python" -I -c 'import importlib.metadata as m, json
 d = m.distribution("infra-mcp").read_text("direct_url.json")
 print(json.loads(d).get("vcs_info", {}).get("commit_id", "")[:7] if d else "")' 2>/dev/null) || commit=""
     info "infra-mcp $("$VENV/bin/pip" show infra-mcp | awk '/^Version:/ {print $2}')${commit:+ (commit $commit)} ; socle : $(as_service "$(ansible_bin ansible-galaxy)" collection list infra_mcp.core 2>/dev/null | awk '/infra_mcp.core/ {print $2}')"
+}
+
+# pip install tourne en root : requirements.txt ne peut désigner que l'outil, à un
+# commit figé (ou une version publiée), et rien d'autre (pas d'index, d'option, de
+# paquet tiers).
+check_requirements() {
+    local line n=0
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%%#*}
+        line=${line//[[:space:]]/}
+        [[ -z $line ]] && continue
+        if [[ $line =~ ^infra-mcp@git\+https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ \
+            || $line =~ ^infra-mcp==[0-9]+(\.[0-9]+)*$ ]]; then
+            n=$((n + 1))
+        else
+            die "requirements.txt : ligne refusée : $line (seul infra-mcp, à un commit figé de 40 caractères)"
+        fi
+    done <"$1"
+    ((n == 1)) || die "requirements.txt : une seule ligne infra-mcp attendue"
+}
+
+# Le repo avance au commit récupéré par step_repo, s'il passe le lint de l'outil.
+step_sync() {
+    [[ -n ${SYNC_TARGET:-} ]] || return 0
+    say "Mise à jour du repo de config"
+    local out
+    if ! "$VENV/bin/infra-mcp" sync --help >/dev/null 2>&1; then
+        # Outil antérieur à infra-mcp sync.
+        as_service git merge --ff-only --quiet "$SYNC_TARGET" || die "repo de config : avance rapide impossible"
+        info "à jour : $(as_service git log -1 --format='%h %s')"
+        return
+    fi
+    if ! out=$(as_service "$VENV/bin/infra-mcp" sync "$REPO_DIR" 2>&1); then
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        die "le repo de config reste au commit déployé"
+    fi
+    info "$out"
 }
 
 # Unités systemd et ce script, depuis le paquet installé : ils suivent sa version.
@@ -264,6 +313,9 @@ step_files() {
 #INFRA_MCP_MAX_PLANS=2
 EOF
         chmod 644 "$ENV_FILE"
+    fi
+    if [[ -d /etc/logrotate.d ]]; then
+        install -m 644 "$src/infra-mcp.logrotate" /etc/logrotate.d/infra-mcp
     fi
     if has_systemd; then
         install -m 644 "$src"/infra-mcp.service "$src"/infra-mcp-sync.service "$src"/infra-mcp-sync.timer /etc/systemd/system/
@@ -776,6 +828,7 @@ cmd_install() {
     step_tool
     step_files
     handover install
+    step_sync
     step_vault
     step_known_hosts
     step_proxy
@@ -791,6 +844,7 @@ cmd_update() {
     step_tool
     step_files
     handover update
+    step_sync
     step_proxy_update
     step_services
     step_checks

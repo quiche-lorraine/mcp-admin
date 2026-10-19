@@ -53,10 +53,10 @@ def test_reseaux_partages_mal_nommes(tmp_path):
     vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
     vars_dir.mkdir(parents=True)
     (vars_dir / "stacks.yml").write_text(yaml.safe_dump({
-        "swarm_stacks": [], "swarm_secrets": {}, "swarm_networks": ["proxy", "Proxy", "ingress", "a b"],
+        "swarm_stacks": [], "swarm_secrets": {}, "swarm_networks": ["proxy", "Proxy", "ingress", "a b", "proxy\n"],
     }))
     problems = lint.stacks_inventory_violations(tmp_path)
-    assert problems == [f"swarm_networks : nom invalide ou réservé : {n!r}" for n in ("Proxy", "ingress", "a b")]
+    assert problems == [f"swarm_networks : nom invalide ou réservé : {n!r}" for n in ("Proxy", "ingress", "a b", "proxy\n")]
     (vars_dir / "stacks.yml").write_text(yaml.safe_dump({"swarm_stacks": [], "swarm_networks": "proxy"}))
     assert lint.stacks_inventory_violations(tmp_path) == ["swarm_networks : liste de noms de réseaux attendue"]
 
