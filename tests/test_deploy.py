@@ -122,6 +122,19 @@ def test_repo_suit_sa_seule_branche(tmp_path):
     assert res.returncode != 0 and "suite" not in res.stdout and "git pull a échoué" in res.stderr
 
 
+def test_inventory_user(tmp_path):
+    inv = tmp_path / "hosts.yml"
+    inv.write_text(yaml.safe_dump({"all": {"vars": {"ansible_user": "renaud"},
+                                           "hosts": {"srv": {}, "autre": {"ansible_user": "admin"}}}}))
+    bin_dir = Path(shutil.which("ansible-inventory")).parent
+    setup = (f'VENV="{Path(sys.executable).parent.parent}"; ansible_bin() {{ echo "{bin_dir}/$1"; }}; '
+             f'as_service() {{ "$@" -i "{inv}"; }}; ')
+    assert sourced(setup + "inventory_user srv") == "renaud\n"
+    assert sourced(setup + "inventory_user autre") == "admin\n"
+    inv.write_text(yaml.safe_dump({"all": {"hosts": {"srv": {}}}}))
+    assert sourced(setup + "inventory_user srv") == "root\n"
+
+
 def test_unite_lit_le_fichier_local():
     unit = (DEPLOY / "infra-mcp.service").read_text()
     assert "EnvironmentFile=-/etc/infra-mcp/infra-mcp.env" in unit

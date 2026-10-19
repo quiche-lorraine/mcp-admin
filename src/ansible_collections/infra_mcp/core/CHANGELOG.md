@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Garde-fous du rôle `base` : le compte d'Ansible protégé est celui de
+  l'inventaire (`base_ansible_user`, passé par `add-host`), et non celui du
+  premier passage. `add-host --bootstrap-user ubuntu` (ou debian…) fonctionne
+  sur les images où root ne peut pas se connecter.
+
 ## 0.3.1
 
 - `swarm_join` : le plan ne plante plus sur un swarm pas encore initialisé

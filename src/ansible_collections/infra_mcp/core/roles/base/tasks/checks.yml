@@ -53,23 +53,30 @@
   vars:
     _conflict: "{{ base_users_absent | intersect(base_admin_users | map(attribute='name')) }}"
 
+# Le compte d'Ansible est celui de l'inventaire. Au premier passage d'une machine,
+# add-host se connecte avec un autre compte (--bootstrap-user : root, ou le compte
+# sudo de l'image, ubuntu…) et passe celui de l'inventaire dans base_ansible_user.
 - name: Ni root ni le compte d'Ansible ne sont supprimés
   ansible.builtin.assert:
     that: _protected | intersect(base_users_absent) | length == 0
     fail_msg: "users_absent_* ne peut pas contenir {{ _protected | intersect(base_users_absent) | join(', ') }}"
     quiet: true
   vars:
-    _protected: "{{ ['root', ansible_user | default('root')] }}"
+    # Le compte de la connexion en cours aussi : on ne supprime pas la branche
+    # sur laquelle on est assis.
+    _protected: "{{ ['root', base_ansible_user | default(ansible_user) | default('root'), ansible_user | default('root')] | unique }}"
 
 - name: Le compte d'Ansible garde son sudo
   ansible.builtin.assert:
     that: >-
-      (ansible_user | default('root')) == 'root'
-      or ansible_user in (base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | map(attribute='name'))
+      _account == 'root'
+      or _account in (base_admin_users | selectattr('sudo', 'defined') | selectattr('sudo') | map(attribute='name'))
     fail_msg: >-
-      {{ ansible_user }} est le compte qu'utilise Ansible : il doit rester dans
+      {{ _account }} est le compte qu'utilise Ansible : il doit rester dans
       admin_users_* avec sudo: true, sinon le prochain apply n'aurait plus les droits root.
     quiet: true
+  vars:
+    _account: "{{ base_ansible_user | default(ansible_user) | default('root') }}"
 
 # SSH n'accepte plus root ni les mots de passe (ssh.yml) : il faut un admin
 # capable de prendre le relais, avec sudo et au moins une clé.
