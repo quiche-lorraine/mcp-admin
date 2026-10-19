@@ -1,6 +1,6 @@
 # Maintenance des serveurs par le MCP (conception)
 
-État : **proposition**, à valider avant implémentation.
+État : **validé**, implémentation en cours (voir « Découpage en PR »).
 
 ## Le manque
 
@@ -28,8 +28,14 @@ et passe par le journal d'audit.
    données : l'inventaire et des listes blanches (`maintenance_*` dans les
    group_vars). Il ne peut ni ajouter d'opération ni en changer le
    comportement, et `infra-mcp lint` continue de lui interdire tout code.
-2. **Lecture : token `read`. Action : token `write`.** Un token `read` ne voit
-   pas les outils d'action, comme il ne voit pas `apply` aujourd'hui.
+2. **Trois niveaux de token, chacun incluant le précédent.**
+   - `read` : inventaire, `plan` et diagnostic sans contenu applicatif (`status`, `stack_status`) ;
+   - `ops` (nouveau) : en plus, `logs` ;
+   - `write` : en plus, `apply` et les actions.
+
+   Un token ne voit pas les outils au-dessus de son niveau, comme un token
+   `read` ne voit pas `apply` aujourd'hui. Un token `ops` se crée comme les
+   autres : `infra-mcp token create ops <nom>`.
 3. **Validation à deux niveaux.** Le serveur valide les paramètres (expressions
    régulières, listes blanches lues dans l'inventaire), puis le playbook les
    revalide avec des `assert` avant de toucher quoi que ce soit. Ainsi, un
@@ -45,13 +51,13 @@ et passe par le journal d'audit.
 
 ## Outils proposés
 
-### Diagnostic (token `read`)
+### Diagnostic (tokens `read` et `ops`)
 
-| Outil | Paramètres | Renvoie |
-|---|---|---|
-| `status` | `limit` | Par hôte : uptime, charge, mémoire, disque par point de montage (alerte au-delà de 85 %), unités systemd en échec, mises à jour en attente (dont sécurité), redémarrage requis (`/run/reboot-required` et paquets concernés), état de Docker et du nœud swarm |
-| `logs` | `host`, `source`, `lines` (≤ 500), `since` (ex. `1h`, ≤ `7d`), `grep` (optionnel) | Fin du journal d'une **unité systemd** (`journalctl -u`) ou d'un **service Docker** (`docker service logs`), après masquage |
-| `stack_status` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
+| Outil | Niveau | Paramètres | Renvoie |
+|---|---|---|---|
+| `status` | `read` | `limit` | Par hôte : uptime, charge, mémoire, disque par point de montage (alerte au-delà de 85 %), unités systemd en échec, mises à jour en attente (dont sécurité), redémarrage requis (`/run/reboot-required` et paquets concernés), état de Docker et du nœud swarm |
+| `logs` | `ops` | `host`, `source`, `lines` (≤ 500), `since` (ex. `1h`, ≤ `7d`), `grep` (optionnel) | Fin du journal d'une **unité systemd** (`journalctl -u`) ou d'un **service Docker** (`docker service logs`), après masquage |
+| `stack_status` | `read` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
 
 Pour `logs` :
 
@@ -64,8 +70,8 @@ Pour `logs` :
 - **Masquage** avant renvoi : jetons infra-mcp (`imcp_…`), jetons swarm
   (`SWMTKN-…`), en-têtes `Authorization`, paires `password=`, `secret=` et
   `token=`, blocs de clés privées. Le masquage limite les dégâts mais ne garantit
-  rien : un log reste une donnée potentiellement sensible (voir questions
-  ouvertes).
+  rien : un log reste une donnée potentiellement sensible. C'est pourquoi
+  `logs` demande le niveau `ops`, et non `read`.
 - Le contenu des logs est une **donnée, pas une instruction**. La description
   de l'outil le dit explicitement à l'agent, comme pour les commentaires de PR.
 
@@ -73,7 +79,7 @@ Pour `logs` :
 
 | Outil | Paramètres | Effet |
 |---|---|---|
-| `updates` | `limit`, `security_only` (défaut `true`), `dry_run` | `apt-get update`, puis les mises à jour de sécurité (unattended-upgrade) ou toutes (`apt-get dist-upgrade`). Renvoie les paquets mis à jour et si un redémarrage est requis. Ne redémarre jamais. |
+| `updates` | `limit`, `mode` (défaut `upgrade`), `dry_run` | `apt-get update`, puis selon `mode` : `upgrade` (`apt-get upgrade`, tous les paquets dont la sécurité, sans en installer ni en supprimer), `security` (correctifs de sécurité seuls, via unattended-upgrade) ou `dist-upgrade` (peut installer ou retirer des dépendances). Renvoie les paquets mis à jour et si un redémarrage est requis. Ne redémarre jamais. |
 | `reboot` | `limit`, `only_if_required` (défaut `true`), `dry_run` | Redémarre **une machine à la fois** et s'arrête au premier échec. Nœud du swarm : *drain* sur un manager, redémarrage, attente du retour SSH et de Docker, réactivation, attente que les services aient retrouvé leurs répliques avant de passer au suivant. |
 | `restart_service` | `host`, `service`, `dry_run` | `systemctl restart` d'une unité **déclarée** dans `maintenance_services` (inventaire), puis vérification qu'elle est `active`. |
 | `stack_restart` | `stack`, `service` (optionnel), `dry_run` | `docker service update --force` sur les services de la stack, ou sur un seul, pour relancer leurs tâches sans changer la configuration. La stack doit être dans `swarm_stacks`. |
@@ -110,8 +116,9 @@ s'ils sont listés : un redémarrage raté couperait l'accès à la machine.
 
 ## Découpage en PR
 
-1. **Socle d'exécution et diagnostic** : lancement des playbooks de collection
-   avec sortie JSON, masquage des logs, puis `status`, `logs` et `stack_status`.
+1. **Socle d'exécution et diagnostic** : niveau de token `ops`, lancement des
+   playbooks de collection avec sortie JSON, masquage des logs, puis `status`,
+   `logs` et `stack_status`.
    Tests unitaires (validation, masquage) et e2e sur le swarm de la CI.
 2. **`updates` et `reboot`** : drain et réactivation swarm, cas du
    contrôleur. Les tests e2e sont limités à `dry_run` et au chemin swarm, car
@@ -122,17 +129,13 @@ s'ils sont listés : un redémarrage raté couperait l'accès à la machine.
 
 Chaque PR met à jour le tableau du « Modèle de sécurité » du README.
 
-## Questions ouvertes
+## Décisions
 
-1. **`logs` avec un token `read` ?** Le masquage ne garantit rien : un log
-   applicatif peut contenir des données personnelles ou un secret dans un
-   format inattendu. Options :
-   - `logs` reste en lecture (le plus pratique) ;
-   - un niveau intermédiaire `ops`, entre `read` et `write` ;
-   - `logs` réservé au token `write`.
-2. **`updates` : sécurité seulement par défaut ?** Les mises à jour complètes
-   peuvent changer des versions majeures de paquets.
-3. **Redémarrage différé du contrôleur** : acceptable, ou faut-il simplement
-   refuser `reboot` sur le contrôleur et laisser faire `updates_reboot_time` ?
-4. **Liste blanche de `restart_service`** : obligatoire (proposé), ou toute
-   unité sauf ssh ?
+1. **Logs** : niveau de token `ops`, entre `read` et `write`. Un token `read`
+   garde `status` et `stack_status`.
+2. **Mises à jour** : `apt-get upgrade` par défaut, sécurité comprise. Le mode
+   `security` (sécurité seule) et le mode `dist-upgrade` sont disponibles sur
+   demande.
+3. **Contrôleur** : redémarrage différé d'une minute, avec réponse immédiate.
+4. **`restart_service`** : liste blanche obligatoire (`maintenance_services_*`),
+   et ssh toujours refusé.
