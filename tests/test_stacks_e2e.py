@@ -172,3 +172,20 @@ def test_variable_vault_mal_nommee_refusee(env):
     env.vault({"vault_token": "s3cr3t-v1", "db_password": "s3cr3t-v1"})
     env.run("--check", ok=False)
     assert "db_password doivent être renommées" in env.log
+
+
+def test_reseaux_propres_a_la_stack(env):
+    # Réseaux déclarés avec des options (internal) ou sans définition : créés par la
+    # stack et chiffrés par le socle. Un réseau avec options sans clé external
+    # faisait échouer la lecture des compose.
+    compose = yaml.safe_load(env.compose_path.read_text())
+    compose["services"]["web"]["networks"] = ["default", "interne", "simple"]
+    compose["networks"] = {"interne": {"internal": True}, "simple": None}
+    env.compose_path.write_text(yaml.safe_dump(compose))
+    assert env.run("--check")["changed"] == 2  # secret, stack
+    assert env.run()["changed"] == 2
+    for name, internal in (("interne", True), ("simple", False)):
+        net = json.loads(docker("network", "inspect", f"{STACK}_{name}"))[0]
+        assert net["Options"].get("encrypted") == "true", net
+        assert net["Internal"] is internal, net
+    assert env.run("--check")["changed"] == 0

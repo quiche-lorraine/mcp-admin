@@ -114,14 +114,19 @@
                'secrets': item.secrets | default([]),
                'compose': _compose,
                'services': _compose.services.keys() | list,
-               'networks': _networks | rejectattr('value.external', 'true') | map(attribute='key') | list,
-               'external_networks': _networks | selectattr('value.external', 'true') | map(attribute='key') | list,
+               'networks': _networks | map(attribute='key') | difference(_external) | list,
+               'external_networks': _external,
+               'network_defs': _compose.networks | default({}, true),
                'hash': (_text ~ (item.secrets | default([]) | to_json) ~ _override) | hash('sha256'),
              }] }}
       vars:
         _text: "{{ lookup('ansible.builtin.file', stacks_path ~ '/' ~ item.name ~ '/compose.yml') }}"
         _compose: "{{ _text | from_yaml }}"
         _networks: "{{ _compose.networks | default({}, true) | dict2items }}"
+        # Un réseau peut être déclaré sans définition (null) ou sans clé external.
+        _external: >-
+          {{ _networks | selectattr('value', 'mapping') | selectattr('value.external', 'defined')
+             | selectattr('value.external', 'true') | map(attribute='key') | list }}
         # Ce que le socle ajoute au compose fait partie de l'empreinte : une nouvelle
         # version de l'outil qui le change annonce un redéploiement en plan.
         _override: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/templates/stack-override.yml.j2') }}"
