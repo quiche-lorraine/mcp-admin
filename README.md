@@ -109,6 +109,22 @@ Le rôle `base`, appliqué à tous les serveurs :
 - **firewall** : entrée en deny, port SSH toujours ouvert ;
 - **comptes retirés** en dernier.
 
+Le rôle `crowdsec`, appliqué à tous les serveurs (sauf `crowdsec_enabled:
+false`) :
+- **CrowdSec** depuis le dépôt de l'éditeur (paquets `any`, indépendants de la
+  version d'Ubuntu) ;
+- **détection** : SSH (`auth.log`, ou journald sans rsyslog) et, sur les nœuds
+  Docker, les logs d'accès de Traefik (`crowdsec_traefik_containers`) ;
+  collections `crowdsecurity/linux`, `sshd` et `traefik` ;
+- **blocage** par le bouncer nftables, sur les hooks `input` (la machine) et
+  `forward` (ports publiés par Docker, qui échappent aux règles d'ufw) ;
+- **jamais bannis** : réseaux privés et boucle locale, l'adresse d'où Ansible
+  se connecte (le contrôleur), et `crowdsec_whitelist_*` (IP ou CIDR, listes
+  additionnées comme celles de `base`) ;
+- les IP qui attaquent sont partagées avec CrowdSec, qui fournit en retour sa
+  liste communautaire d'IP malveillantes ;
+- l'outil `status` donne les bannissements en cours (décisions locales).
+
 Ses valeurs par défaut (`roles/base/defaults/main.yml`) se surchargent dans
 l'inventaire. Ses **verrous** (`roles/base/vars/main.yml`, aujourd'hui le
 firewall en deny) ne peuvent pas l'être : le rôle échoue si un étage essaie.
@@ -130,7 +146,7 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   un suffixe (`packages_present_global`, `packages_present_swarm`,
   `packages_present_host`) et le rôle `base` fusionne tout ce qui commence par
   `packages_present_`, y compris `packages_present_base` du socle. Même principe pour `packages_absent_`, `firewall_allow_`,
-  `firewall_remove_`, `admin_users_` et `users_absent_`.
+  `firewall_remove_`, `admin_users_`, `users_absent_` et `crowdsec_whitelist_`.
 - **Retraits** : enlever un élément d'une liste ne défait rien sur les serveurs.
   Pour fermer un port, liste la règle dans `firewall_remove_*` (avec la même
   `src` que la règle d'origine) ; pour supprimer un compte, liste-le dans

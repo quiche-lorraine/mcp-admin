@@ -173,6 +173,7 @@ def summarize_status(report: dict) -> dict:
                     "packages": [line.split("/")[0] for line in upgradable][:50]},
         "reboot_required": bool(report.get("reboot_required")),
         "reboot_packages": (report.get("reboot_pkgs") or "").split(),
+        "crowdsec": summarize_crowdsec(report.get("crowdsec")),
         "docker": None if docker is None else {
             "containers_running": docker.get("ContainersRunning"),
             "swarm": swarm.get("LocalNodeState"),
@@ -180,6 +181,15 @@ def summarize_status(report: dict) -> dict:
             "nodes": swarm.get("Nodes"),
         },
     }
+
+
+def summarize_crowdsec(alerts: list[dict] | None) -> dict | None:
+    """Alertes CrowdSec (cscli decisions list) -> bannissements en cours."""
+    if alerts is None:
+        return None
+    bans = [{"ip": d.get("value"), "scenario": d.get("scenario"), "duration": d.get("duration")}
+            for a in alerts for d in a.get("decisions") or [] if d.get("type") == "ban"]
+    return {"bans": len(bans), "latest": bans[:10]}
 
 
 def summarize_stack(tasks: list[dict]) -> dict:

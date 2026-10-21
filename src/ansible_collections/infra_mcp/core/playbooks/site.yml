@@ -1,4 +1,5 @@
-# Socle de tout le parc : rôle base partout, Docker là où il est géré.
+# Socle de tout le parc : rôle base partout, Docker là où il est géré, CrowdSec
+# partout sauf crowdsec_enabled: false.
 # `plan site` sert aussi de détection de dérive.
 - name: Configuration de base
   hosts: all
@@ -10,3 +11,6 @@
     - infra_mcp.core.base
     - role: infra_mcp.core.docker
       when: docker_engine_managed | default(true)
+    # Après Docker : CrowdSec lit les logs de Traefik sur les nœuds Docker.
+    - role: infra_mcp.core.crowdsec
+      when: crowdsec_enabled | default(true)

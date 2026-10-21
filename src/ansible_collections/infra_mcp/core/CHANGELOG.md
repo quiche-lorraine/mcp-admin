@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Rôle `crowdsec`, appliqué par `site` à tous les serveurs (sauf
+  `crowdsec_enabled: false`) : détection SSH et Traefik, blocage par le bouncer
+  nftables (hooks input et forward), IP jamais bannies (`crowdsec_whitelist_*`
+  et l'adresse du contrôleur).
+- `maintenance_status` remonte les bannissements CrowdSec en cours.
+- Au premier `plan site` après cette mise à jour, l'installation de CrowdSec
+  apparaît à faire.
+
 ## 0.4.1
 
 - `maintenance_service_logs` : `since` en jours (`1d`) est converti en heures,
