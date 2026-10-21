@@ -124,20 +124,72 @@
   notify: Redémarrer CrowdSec
   when: not crowdsec_installing
 
-# Le bouncer garde sa configuration (et la clé d'API créée par le paquet) ; le
-# fichier .local la complète, et survit aux mises à jour.
-- name: Bouncer sur les hooks input et forward
+# Le bouncer s'enregistre auprès de la Local API sous un nom fixe, avec une clé
+# gardée sur la machine (root seulement) : celle qu'écrit le paquet n'est pas
+# toujours enregistrée (« access forbidden »). Le fichier .local complète la
+# configuration du paquet et survit à ses mises à jour.
+- name: Clé du bouncer
+  ansible.builtin.stat:
+    path: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+  register: crowdsec_bouncer_key_file
+
+- name: Bouncers enregistrés
+  ansible.builtin.command:
+    argv: [cscli, bouncers, list, --output, json]
+  register: crowdsec_bouncers
+  changed_when: false
+  when: not crowdsec_installing
+
+- name: Enregistrement du bouncer
+  when:
+    - not crowdsec_installing
+    - not ansible_check_mode
+    - not crowdsec_bouncer_key_file.stat.exists
+      or 'infra-mcp-firewall' not in ((crowdsec_bouncers.stdout | default('null') | from_json) or []) | map(attribute='name')
+  block:
+    - name: Ancien enregistrement retiré
+      ansible.builtin.command:
+        argv: [cscli, bouncers, delete, infra-mcp-firewall]
+      register: crowdsec_bouncer_delete
+      changed_when: crowdsec_bouncer_delete.rc == 0
+      failed_when: false
+
+    - name: Bouncer enregistré
+      ansible.builtin.command:
+        argv: [cscli, bouncers, add, infra-mcp-firewall, --output, raw]
+      register: crowdsec_bouncer_add
+      changed_when: true
+      no_log: true
+
+    - name: Clé gardée
+      ansible.builtin.copy:
+        dest: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+        content: "{{ crowdsec_bouncer_add.stdout | trim }}\n"
+        mode: "0600"
+      no_log: true
+
+- name: Lecture de la clé
+  ansible.builtin.slurp:
+    src: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+  register: crowdsec_bouncer_key
+  no_log: true
+  when: not crowdsec_installing and not (ansible_check_mode and not crowdsec_bouncer_key_file.stat.exists)
+
+- name: Bouncer sur les hooks input et forward, avec sa clé
   ansible.builtin.copy:
     dest: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
     mode: "0600"
     content: |
       # Géré par Ansible (infra_mcp.core.crowdsec) — ne pas modifier à la main.
+      api_key: {{ crowdsec_bouncer_key.content | default('') | b64decode | trim }}
       mode: nftables
       nftables_hooks:
         - input
         - forward
+  # La clé ne doit apparaître ni dans le plan ni dans les journaux.
+  no_log: true
   notify: Redémarrer le bouncer
-  when: not crowdsec_installing
+  when: not crowdsec_installing and crowdsec_bouncer_key is not skipped
 
 - name: Services CrowdSec actifs
   ansible.builtin.systemd_service:
