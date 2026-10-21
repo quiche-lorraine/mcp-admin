@@ -122,6 +122,19 @@ def test_rapport_status():
     assert s["reboot_required"] and s["reboot_packages"] == ["linux-image-6.8"]
     assert s["docker"] == {"containers_running": 3, "swarm": "active", "manager": True, "nodes": 1}
     assert m.summarize_status({"docker": None})["docker"] is None
+    assert s["crowdsec"] is None  # pas installé
+
+
+def test_rapport_crowdsec():
+    alerts = [
+        {"decisions": [{"type": "ban", "value": "203.0.113.7", "scenario": "crowdsecurity/ssh-bf", "duration": "3h59m"}]},
+        {"decisions": [{"type": "captcha", "value": "198.51.100.1"}, {"type": "ban", "value": "198.51.100.2"}]},
+        {"decisions": None},
+    ]
+    s = m.summarize_status({"crowdsec": alerts})["crowdsec"]
+    assert s["bans"] == 2
+    assert s["latest"][0] == {"ip": "203.0.113.7", "scenario": "crowdsecurity/ssh-bf", "duration": "3h59m"}
+    assert m.summarize_status({"crowdsec": []})["crowdsec"] == {"bans": 0, "latest": []}
 
 
 def test_rapport_stack():

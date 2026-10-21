@@ -46,6 +46,15 @@
       register: _docker
       failed_when: false
 
+    # Décisions locales en cours (sans la liste communautaire) ; absent si CrowdSec
+    # n'est pas installé.
+    - name: CrowdSec
+      ansible.builtin.command:
+        argv: [cscli, decisions, list, --output, json]
+      register: _crowdsec
+      changed_when: false
+      failed_when: false
+
     - name: Rapport
       ansible.builtin.debug:
         var: maintenance_report
@@ -60,3 +69,4 @@
           reboot_required: "{{ _reboot_required.stat.exists }}"
           reboot_pkgs: "{{ (_reboot_pkgs.content | default('') | b64decode) if _reboot_required.stat.exists else '' }}"
           docker: "{{ _docker.host_info | default(none) }}"
+          crowdsec: "{{ ((_crowdsec.stdout | from_json) or []) if (_crowdsec.rc | default(1)) == 0 else none }}"

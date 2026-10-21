@@ -1,0 +1,17 @@
+# CrowdSec : détection (SSH, et Traefik sur les nœuds Docker) et blocage par le
+# pare-feu. Désactivable par machine ou par groupe : crowdsec_enabled: false.
+#
+# Les listes s'additionnent d'un étage à l'autre, comme celles du rôle base :
+# crowdsec_whitelist_global, crowdsec_whitelist_<groupe>, crowdsec_whitelist_host.
+
+# IP ou réseaux (CIDR) jamais bannis, en plus des réseaux privés et de la
+# boucle locale (whitelist de CrowdSec) et de l'adresse d'où Ansible se connecte.
+crowdsec_whitelist_base: []
+
+# Collections du hub : détection SSH et système partout, HTTP sur les nœuds Docker.
+crowdsec_collections_base: [crowdsecurity/linux, crowdsecurity/sshd]
+crowdsec_collections_docker: [crowdsecurity/traefik]
+
+# Conteneurs dont les logs d'accès sont analysés (expressions régulières sur le
+# nom). Par défaut, le Traefik de la stack traefik.
+crowdsec_traefik_containers: ['^traefik_traefik\.']

@@ -1,0 +1,200 @@
+# CrowdSec depuis le dépôt de l'éditeur (paquets « any » : binaires statiques,
+# indépendants de la version de la distribution, celle d'Ubuntu étant ancienne).
+# L'agent lit les logs, la Local API décide, le bouncer bloque dans nftables :
+# hooks input (la machine, SSH compris) et forward (ports publiés par Docker,
+# qui ne passent pas par les règles d'ufw).
+#
+# Les IP qui attaquent la machine sont partagées avec CrowdSec, qui fournit en
+# retour la liste communautaire d'IP malveillantes, bloquées d'emblée.
+
+- name: Prérequis du module deb822_repository
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: crowdsec_prereq
+
+- name: Dépôt CrowdSec
+  ansible.builtin.deb822_repository:
+    name: crowdsec
+    types: deb
+    uris: https://packagecloud.io/crowdsec/crowdsec/any/
+    suites: any
+    components: main
+    signed_by: https://packagecloud.io/crowdsec/crowdsec/gpgkey
+  register: crowdsec_repo
+  # En plan, sur une machine neuve, chaque étape n'est qu'« à faire » : la suivante
+  # ne trouverait ni le module python3-debian, ni le dépôt, ni les paquets.
+  when: not (ansible_check_mode and crowdsec_prereq is changed)
+
+- name: CrowdSec et son bouncer nftables
+  ansible.builtin.apt:
+    name: [crowdsec, crowdsec-firewall-bouncer-nftables]
+    state: present
+    update_cache: "{{ crowdsec_repo is changed }}"
+  register: crowdsec_packages
+  when: not (ansible_check_mode and (crowdsec_prereq is changed or crowdsec_repo is changed))
+
+- name: Fusion des couches
+  ansible.builtin.set_fact:
+    crowdsec_installing: "{{ ansible_check_mode and (crowdsec_prereq is changed or crowdsec_repo is changed or crowdsec_packages is changed) }}"
+    crowdsec_docker: "{{ docker_engine_managed | default(true) }}"
+    crowdsec_whitelist: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^crowdsec_whitelist_')) | flatten | unique }}"
+
+# L'adresse d'où le contrôleur se connecte n'est jamais bannie : sans elle, plus
+# de gestion possible. Lue sans sudo, qui ne transmet pas SSH_CLIENT.
+- name: Adresse de connexion d'Ansible
+  ansible.builtin.setup:
+    gather_subset: [env]
+  become: false
+
+- name: IP jamais bannies valides
+  ansible.builtin.assert:
+    that: item is string and item is match('^[0-9A-Fa-f.:]+(/[0-9]{1,3})?$')
+    fail_msg: "crowdsec_whitelist_* : « {{ item }} » n'est ni une IP ni un réseau CIDR"
+    quiet: true
+  loop: "{{ crowdsec_whitelist }}"
+
+- name: IP jamais bannies
+  ansible.builtin.copy:
+    dest: /etc/crowdsec/parsers/s02-enrich/infra-mcp-whitelist.yaml
+    mode: "0644"
+    content: |
+      # Géré par Ansible (infra_mcp.core.crowdsec) — ne pas modifier à la main.
+      name: infra_mcp/whitelist
+      description: "IP jamais bannies (socle infra_mcp)"
+      whitelist:
+        reason: "socle infra_mcp"
+        ip: {{ _ips | to_json }}
+        cidr: {{ _cidrs | to_json }}
+  vars:
+    _controller: "{{ (ansible_facts.env.SSH_CLIENT | default('')).split(' ') | first }}"
+    # 127.0.0.1 (déjà dans la whitelist de CrowdSec) garde la liste non vide.
+    _all: "{{ (['127.0.0.1'] + crowdsec_whitelist + ([_controller] if _controller else [])) | unique }}"
+    _ips: "{{ _all | reject('search', '/') | list }}"
+    _cidrs: "{{ _all | select('search', '/') | list }}"
+  notify: Redémarrer CrowdSec
+  when: not crowdsec_installing
+
+# Ubuntu sans rsyslog n'a plus de /var/log/auth.log : SSH est alors lu dans
+# journald. Avec auth.log, la configuration du paquet le lit déjà.
+- name: Journal d'authentification en fichier
+  ansible.builtin.stat:
+    path: /var/log/auth.log
+  register: crowdsec_auth_log
+
+- name: Sources de logs
+  ansible.builtin.copy:
+    dest: /etc/crowdsec/acquis.d/infra-mcp.yaml
+    mode: "0644"
+    content: |
+      # Géré par Ansible (infra_mcp.core.crowdsec) — ne pas modifier à la main.
+      {% if not crowdsec_auth_log.stat.exists %}
+      source: journalctl
+      journalctl_filter:
+        - "_SYSTEMD_UNIT=ssh.service"
+      labels:
+        type: syslog
+      {% endif %}
+      {% if crowdsec_docker %}
+      ---
+      source: docker
+      container_name_regexp: {{ crowdsec_traefik_containers | to_json }}
+      labels:
+        type: traefik
+      {% endif %}
+  notify: Redémarrer CrowdSec
+  when: not crowdsec_installing
+
+- name: Collections du hub installées
+  ansible.builtin.stat:
+    # Une collection installée est un lien dans /etc/crowdsec/collections/<nom>.yaml.
+    path: "/etc/crowdsec/collections/{{ item | split('/') | last }}.yaml"
+  loop: "{{ crowdsec_collections_base + (crowdsec_collections_docker if crowdsec_docker else []) }}"
+  register: crowdsec_collections
+
+- name: Collections du hub
+  ansible.builtin.command:
+    argv: [cscli, collections, install, "{{ item.item }}"]
+  loop: "{{ crowdsec_collections.results | rejectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  changed_when: true
+  notify: Redémarrer CrowdSec
+  when: not crowdsec_installing
+
+# Le bouncer s'enregistre auprès de la Local API sous un nom fixe, avec une clé
+# gardée sur la machine (root seulement) : celle qu'écrit le paquet n'est pas
+# toujours enregistrée (« access forbidden »). Le fichier .local complète la
+# configuration du paquet et survit à ses mises à jour.
+- name: Clé du bouncer
+  ansible.builtin.stat:
+    path: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+  register: crowdsec_bouncer_key_file
+
+- name: Bouncers enregistrés
+  ansible.builtin.command:
+    argv: [cscli, bouncers, list, --output, json]
+  register: crowdsec_bouncers
+  changed_when: false
+  when: not crowdsec_installing
+
+- name: Enregistrement du bouncer
+  when:
+    - not crowdsec_installing
+    - not ansible_check_mode
+    - not crowdsec_bouncer_key_file.stat.exists
+      or 'infra-mcp-firewall' not in ((crowdsec_bouncers.stdout | default('null') | from_json) or []) | map(attribute='name')
+  block:
+    - name: Ancien enregistrement retiré
+      ansible.builtin.command:
+        argv: [cscli, bouncers, delete, infra-mcp-firewall]
+      register: crowdsec_bouncer_delete
+      changed_when: crowdsec_bouncer_delete.rc == 0
+      failed_when: false
+
+    - name: Bouncer enregistré
+      ansible.builtin.command:
+        argv: [cscli, bouncers, add, infra-mcp-firewall, --output, raw]
+      register: crowdsec_bouncer_add
+      changed_when: true
+      no_log: true
+
+    - name: Clé gardée
+      ansible.builtin.copy:
+        dest: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+        content: "{{ crowdsec_bouncer_add.stdout | trim }}\n"
+        mode: "0600"
+      no_log: true
+
+- name: Lecture de la clé
+  ansible.builtin.slurp:
+    src: /etc/crowdsec/bouncers/infra-mcp-firewall.key
+  register: crowdsec_bouncer_key
+  no_log: true
+  when: not crowdsec_installing and not (ansible_check_mode and not crowdsec_bouncer_key_file.stat.exists)
+
+- name: Bouncer sur les hooks input et forward, avec sa clé
+  ansible.builtin.copy:
+    dest: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
+    mode: "0600"
+    content: |
+      # Géré par Ansible (infra_mcp.core.crowdsec) — ne pas modifier à la main.
+      api_key: {{ crowdsec_bouncer_key.content | default('') | b64decode | trim }}
+      mode: nftables
+      nftables_hooks:
+        - input
+        - forward
+  # La clé ne doit apparaître ni dans le plan ni dans les journaux.
+  no_log: true
+  notify: Redémarrer le bouncer
+  when: not crowdsec_installing and crowdsec_bouncer_key is not skipped
+
+- name: Services CrowdSec actifs
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [crowdsec, crowdsec-firewall-bouncer]
+  when: not crowdsec_installing
