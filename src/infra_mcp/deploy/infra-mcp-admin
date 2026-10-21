@@ -4,7 +4,7 @@
 # relancée : elle ne refait que ce qui manque.
 #
 #   infra-mcp-admin install [--repo <url du repo de config>] [--domain <nom>] [--tool <spec pip>]
-#   infra-mcp-admin update [--tool <spec pip>]
+#   infra-mcp-admin update [--tool <spec pip>] [--auto]
 #   infra-mcp-admin add-host <hôte> [--bootstrap-user <compte>]   (root par défaut, ou ubuntu, debian…)
 #   infra-mcp-admin cloud-init <hôte>
 #
@@ -15,6 +15,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/quiche-lorraine/mcp-admin/main/install.sh | sudo bash
 # --tool remplace la version de l'outil figée par le repo de config
 # (requirements.txt) : réservé aux tests d'une version de développement.
+# update --auto est lancé par infra-mcp-update.service quand requirements.txt
+# change dans le repo déployé : sans effet si l'outil est déjà à cette version.
 
 set -euo pipefail
 
@@ -318,7 +320,8 @@ EOF
         install -m 644 "$src/infra-mcp.logrotate" /etc/logrotate.d/infra-mcp
     fi
     if has_systemd; then
-        install -m 644 "$src"/infra-mcp.service "$src"/infra-mcp-sync.service "$src"/infra-mcp-sync.timer /etc/systemd/system/
+        install -m 644 "$src"/infra-mcp.service "$src"/infra-mcp-sync.service "$src"/infra-mcp-sync.timer \
+            "$src"/infra-mcp-update.service "$src"/infra-mcp-update.path /etc/systemd/system/
         systemctl daemon-reload
         info "installées dans /etc/systemd/system"
     else
@@ -409,6 +412,8 @@ step_services() {
     systemctl enable --quiet infra-mcp.service infra-mcp-sync.timer
     systemctl restart infra-mcp.service
     systemctl start infra-mcp-sync.timer
+    # Mise à jour automatique de l'outil quand le repo de config change de version.
+    systemctl enable --quiet --now infra-mcp-update.path
     info "infra-mcp : $(systemctl is-active infra-mcp.service), synchronisation : $(systemctl is-active infra-mcp-sync.timer)"
 }
 
@@ -818,6 +823,7 @@ handover() {
     local args=("$@")
     [[ -z $DOMAIN ]] || args+=(--domain "$DOMAIN")
     [[ -z $TOOL ]] || args+=(--tool "$TOOL")
+    [[ -z ${AUTO:-} ]] || args+=(--auto)
     INFRA_MCP_ADMIN_PINNED=1 exec "$SELF" "${args[@]}"
 }
 
@@ -838,9 +844,38 @@ cmd_install() {
     summary_install
 }
 
+# Mise à jour automatique : rien à faire si l'outil est déjà à la version que
+# demande le repo de config. Sinon, elle attend que les opérations Ansible en
+# cours se terminent : pip remplacerait la collection sous leurs pieds, et le
+# redémarrage du service les couperait.
+auto_gate() {
+    [[ -n ${AUTO:-} && -z ${INFRA_MCP_ADMIN_PINNED:-} ]] || return 0
+    local req current=0
+    req=$(mktemp)
+    as_service git show "$SYNC_TARGET:requirements.txt" >"$req" || die "requirements.txt illisible dans le repo de config"
+    "$VENV/bin/python" -I -m infra_mcp.version "$req" 2>/dev/null || current=$?
+    rm -f "$req"
+    if ((current == 0)); then
+        info "outil déjà à la version du repo de config : rien à faire"
+        return 1
+    fi
+    wait_idle
+}
+
+wait_idle() {
+    local i
+    for ((i = 0; i < 60; i++)); do
+        pgrep -u "$SERVICE_USER" -f ansible-playbook >/dev/null || return 0
+        ((i)) || info "opération Ansible en cours : attente de sa fin"
+        sleep 30
+    done
+    die "une opération Ansible tourne encore après 30 minutes : mise à jour abandonnée"
+}
+
 cmd_update() {
     [[ -d $REPO_DIR/.git && -x $VENV/bin/python ]] || die "contrôleur non installé : $0 install"
     step_repo
+    auto_gate || return 0
     step_tool
     step_files
     handover update
@@ -938,7 +973,7 @@ main() {
     RUNNING_SUM=$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | cut -d' ' -f1) || RUNNING_SUM=""
     local command_name=${1:-}
     shift || true
-    REPO="" TOOL="" DOMAIN="" BOOTSTRAP_USER=root
+    REPO="" TOOL="" DOMAIN="" AUTO="" BOOTSTRAP_USER=root
     local positional=()
     while (($#)); do
         case $1 in
@@ -946,10 +981,19 @@ main() {
             --tool) TOOL=$2; shift 2 ;;
             --domain) DOMAIN=$2; shift 2 ;;
             --bootstrap-user) BOOTSTRAP_USER=$2; shift 2 ;;
+            --auto) AUTO=1; shift ;;
             -h | --help) usage; exit 0 ;;
             *) positional+=("$1"); shift ;;
         esac
     done
+    if [[ $command_name == install || $command_name == update ]] && [[ -z ${INFRA_MCP_ADMIN_PINNED:-} ]]; then
+        # Une installation ou mise à jour à la fois : une mise à jour à la main
+        # déclenche aussi la mise à jour automatique (requirements.txt change),
+        # qui attend ici puis constate qu'il n'y a plus rien à faire. Le verrou
+        # suit le script relancé par handover (exec garde le descripteur).
+        exec 9>/run/infra-mcp-admin.lock
+        flock 9
+    fi
     case $command_name in
         install) cmd_install ;;
         update) cmd_update ;;
