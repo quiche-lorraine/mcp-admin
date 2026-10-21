@@ -38,10 +38,19 @@ def infra(tmp_path_factory):
     return root
 
 
+def journals() -> str:
+    """Journaux des services, pour comprendre un échec en CI."""
+    out = subprocess.run(["sudo", "journalctl", "--no-pager", "-n", "60", "-u", "crowdsec",
+                          "-u", "crowdsec-firewall-bouncer"], capture_output=True, text=True).stdout
+    logs = subprocess.run(["sudo", "tail", "-n", "40", "/var/log/crowdsec-firewall-bouncer.log"],
+                          capture_output=True, text=True).stdout
+    return "\n--- journalctl ---\n" + out + "\n--- bouncer.log ---\n" + logs
+
+
 def playbook(infra, *args):
     res = subprocess.run([runner._bin("ansible-playbook"), "crowdsec.yml", *args], cwd=infra,
                          capture_output=True, text=True, env={**os.environ, "ANSIBLE_NOCOLOR": "1"})
-    assert res.returncode == 0, res.stdout[-4000:] + res.stderr[-2000:]
+    assert res.returncode == 0, res.stdout[-4000:] + res.stderr[-2000:] + journals()
     return runner.recap(res.stdout)["cs"]
 
 
