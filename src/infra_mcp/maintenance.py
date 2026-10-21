@@ -99,7 +99,9 @@ def parse_json_output(stdout: str) -> dict:
                 elif result.get("unreachable"):
                     entry.setdefault("error", f"injoignable : {result.get('msg', '')}"[:500])
                 elif result.get("failed") and not result.get("ignore_errors"):
-                    msg = result.get("msg") or result.get("stderr") or ""
+                    # Pour une commande, msg est générique (« non-zero return code ») :
+                    # la cause est dans stderr.
+                    msg = "\n".join(filter(None, (result.get("msg"), result.get("stderr"))))
                     entry.setdefault("error", f"« {name} » : {msg}"[:1000])
     for host, stats in data.get("stats", {}).items():
         hosts.setdefault(host, {})["stats"] = stats

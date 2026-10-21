@@ -87,6 +87,8 @@ def test_lecture_de_la_sortie_json():
             {"task": {"name": "Ignorée"}, "hosts": {"a": {"failed": True, "ignore_errors": True, "msg": "x"}}},
             {"task": {"name": "Rapport"}, "hosts": {"a": {"maintenance_report": {"ok": 1}}}},
             {"task": {"name": "Gathering Facts"}, "hosts": {"c": {"unreachable": True, "msg": "timeout"}}},
+            {"task": {"name": "Logs"}, "hosts": {"d": {"failed": True, "rc": 1, "stderr": "invalid duration",
+                                                       "msg": "non-zero return code"}}},
         ],
         {"a": {"ok": 2}, "b": {"failures": 1}, "c": {"unreachable": 1}},
     )
@@ -94,6 +96,7 @@ def test_lecture_de_la_sortie_json():
     assert hosts["a"] == {"report": {"ok": 1}, "stats": {"ok": 2}}
     assert hosts["b"]["error"] == "« Paramètres valides » : refusé"
     assert hosts["c"]["error"].startswith("injoignable")
+    assert hosts["d"]["error"] == "« Logs » : non-zero return code\ninvalid duration"
     assert m.parse_json_output("pas de JSON") == {}
 
 
