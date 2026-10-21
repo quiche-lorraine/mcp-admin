@@ -21,13 +21,18 @@
           - service
           - logs
           - --tail={{ maintenance_lines }}
-          - --since={{ maintenance_since }}
+          - --since={{ _since }}
           - --timestamps
           - --no-trunc
           - --no-task-ids
           - "{{ maintenance_service }}"
       register: _logs
       changed_when: false
+      vars:
+        # Docker lit une durée Go, sans unité « jour » : 1d devient 24h.
+        _since: >-
+          {{ (maintenance_since[:-1] | int * 24) ~ 'h'
+             if maintenance_since.endswith('d') else maintenance_since }}
 
     - name: Rapport
       ansible.builtin.debug:

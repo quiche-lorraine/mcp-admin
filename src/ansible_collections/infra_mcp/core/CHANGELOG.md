@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- `maintenance_service_logs` : `since` en jours (`1d`) est converti en heures,
+  que `docker service logs` accepte ; il échouait.
+
 ## 0.4.0
 
 - Playbooks de maintenance `maintenance_*` (status, journal, service_logs,
