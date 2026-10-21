@@ -81,7 +81,9 @@ protégée et la surveillance des changements restent la vraie barrière.
 
 1. Claude (ou toi) modifie `group_vars` / `host_vars` et ouvre une PR sur le
    repo de config, dont la CI lance `infra-mcp lint`.
-2. Après le merge, le timer `infra-mcp-sync` fait un `git pull` sur le contrôleur.
+2. Après le merge, le timer `infra-mcp-sync` avance le repo sur le contrôleur
+   (si le commit passe le lint). Si `requirements.txt` a changé, l'outil se met
+   à jour tout seul (voir « Mise à jour »).
 3. `plan site` montre l'effet ; `apply site` l'applique. Pareil pour les
    stacks Swarm avec `plan stacks` / `apply stacks`.
 
@@ -279,8 +281,22 @@ Les réglages propres au contrôleur vont dans `/etc/infra-mcp/infra-mcp.env`
 (créé par `install`, jamais écrasé ; seule l'adresse d'écoute peut y être
 changée par `install`, après accord).
 
-**Mise à jour**, après une PR qui change `requirements.txt` dans le repo de
-config :
+**Mise à jour** : automatique. Quand une PR qui change `requirements.txt` est
+mergée dans le repo de config, le contrôleur récupère le commit (timer
+`infra-mcp-sync`, après le lint), et `infra-mcp-update.path` voit le fichier
+changer. Il lance `infra-mcp-update.service`, qui exécute en root
+`infra-mcp-admin update --auto` :
+- rien à faire si l'outil est déjà à la version demandée ;
+- sinon, attente de la fin des opérations Ansible en cours, puis mise à jour
+  et redémarrage d'infra-mcp.
+
+L'outil MCP `repo_status` donne la version qui tourne. Le résultat est dans
+`journalctl -u infra-mcp-update`, et un échec apparaît dans `systemctl
+--failed` (outil `status`). Le serveur MCP ne peut pas déclencher de mise à
+jour : seul un commit mergé et passé au lint le fait.
+
+À la main, même chose sans condition (et seule possibilité quand le nouveau
+commit ne passe le lint qu'avec la nouvelle version de l'outil) :
 
 ```bash
 sudo infra-mcp-admin update

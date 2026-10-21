@@ -1,6 +1,7 @@
 """Appels à Ansible. Jamais de shell : arguments en liste, entrées validées."""
 
 import asyncio
+import importlib.metadata
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from pathlib import Path
 
 from fastmcp.exceptions import ToolError
 
-from . import config, lint
+from . import config, lint, version
 
 # Noms d'hôtes, de groupes, ou liste séparée par des virgules. Pas de « @fichier »,
 # pas de motifs exotiques : on cible ce qui est déclaré dans l'inventaire, rien d'autre.
@@ -182,10 +183,19 @@ async def playbook(name: str, limit: str, check: bool) -> dict:
     }
 
 
+# Version de l'outil qui tourne, lue au démarrage : après une mise à jour, c'est
+# celle d'avant tant que le service n'a pas redémarré.
+try:
+    TOOL_VERSION = version.installed()
+except importlib.metadata.PackageNotFoundError:
+    TOOL_VERSION = None
+
+
 async def repo_status() -> dict:
     head = await run("git", "log", "-1", "--format=%H %ci %s", timeout=30)
     dirty = await run("git", "status", "--porcelain", timeout=30)
     return {
         "commit": head["output"].strip(),
         "uncommitted_changes": bool(dirty["output"].strip()),
+        "tool": TOOL_VERSION,
     }

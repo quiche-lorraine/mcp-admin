@@ -53,7 +53,7 @@ async def list_playbooks() -> list[str]:
 
 @mcp.tool(annotations=READ, auth=require_scopes("read"))
 async def repo_status() -> dict:
-    """Commit du repo Ansible actuellement déployé sur le contrôleur."""
+    """Commit du repo Ansible déployé sur le contrôleur, et version de l'outil qui tourne."""
     return await runner.repo_status()
 
 

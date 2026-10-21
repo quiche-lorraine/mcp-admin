@@ -1,0 +1,11 @@
+[Unit]
+Description=infra-mcp - mise à jour de l'outil quand le repo de config change de version
+
+[Path]
+# Le repo n'avance qu'après le lint (infra-mcp-sync) : requirements.txt change
+# donc seulement avec un commit mergé et vérifié.
+PathChanged=/opt/infra/requirements.txt
+Unit=infra-mcp-update.service
+
+[Install]
+WantedBy=multi-user.target

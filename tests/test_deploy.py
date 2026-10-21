@@ -18,7 +18,8 @@ INSTALL = Path(__file__).parents[1] / "install.sh"
 
 
 def test_fichiers_livres_avec_le_paquet():
-    for name in ("infra-mcp-admin", "infra-mcp.service", "infra-mcp-sync.service", "infra-mcp-sync.timer"):
+    for name in ("infra-mcp-admin", "infra-mcp.service", "infra-mcp-sync.service", "infra-mcp-sync.timer",
+                 "infra-mcp-update.service", "infra-mcp-update.path"):
         assert (DEPLOY / name).is_file(), name
     assert SCRIPT.stat().st_mode & 0o111, "infra-mcp-admin doit être exécutable"
 
@@ -243,6 +244,36 @@ def test_synchro_conditionnee_par_le_lint():
     script = SCRIPT.read_text()
     assert "git pull" not in script.split("step_repo() {", 1)[1].split("\n}\n", 1)[0]
     assert script.count("    step_sync\n") == 2
+
+
+def test_mise_a_jour_automatique():
+    path = (DEPLOY / "infra-mcp-update.path").read_text()
+    assert "PathChanged=/opt/infra/requirements.txt" in path and "Unit=infra-mcp-update.service" in path
+    unit = (DEPLOY / "infra-mcp-update.service").read_text()
+    assert "ExecStart=/usr/local/sbin/infra-mcp-admin update --auto" in unit
+    script = SCRIPT.read_text()
+    assert 'SELF=/usr/local/sbin/infra-mcp-admin' in script and 'REPO_DIR=/opt/infra' in script
+    # Installées et activées par install et update
+    assert '"$src"/infra-mcp-update.service "$src"/infra-mcp-update.path' in script
+    assert "systemctl enable --quiet --now infra-mcp-update.path" in script
+    # Le script relancé par handover reste en mode automatique
+    assert "args+=(--auto)" in script.split("handover() {", 1)[1].split("\n}\n", 1)[0]
+
+
+def test_mise_a_jour_automatique_sans_effet_si_a_jour(tmp_path):
+    # Le venv de l'outil remplacé par un python qui dit « déjà à jour », puis « à mettre à jour ».
+    for code, expected in ((0, "rien à faire"), (1, "ATTENTE")):
+        venv = tmp_path / f"venv{code}"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").write_text(f"#!/bin/sh\nexit {code}\n")
+        (venv / "bin" / "python").chmod(0o755)
+        out = sourced(f"""VENV={venv}; AUTO=1; SYNC_TARGET=HEAD
+            as_service() {{ echo 'infra-mcp==1.0'; }}; wait_idle() {{ echo ATTENTE; }}
+            auto_gate && echo SUITE || echo FIN""")
+        assert expected in out and ("FIN" if code == 0 else "SUITE") in out, out
+    # Sans --auto, ou dans le script relancé par handover : toujours la suite
+    assert "SUITE" in sourced("AUTO=; auto_gate && echo SUITE")
+    assert "SUITE" in sourced("AUTO=1; INFRA_MCP_ADMIN_PINNED=1; auto_gate && echo SUITE")
 
 
 def test_rotation_du_journal_d_audit():

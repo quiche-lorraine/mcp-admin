@@ -1,0 +1,14 @@
+[Unit]
+Description=infra-mcp - mise à jour de l'outil à la version figée par le repo de config
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# En root, comme une mise à jour à la main. Ne fait rien si l'outil est déjà à
+# la bonne version, attend la fin des opérations Ansible en cours, puis
+# redémarre infra-mcp. Résultat : journalctl -u infra-mcp-update ; un échec
+# apparaît dans systemctl --failed (et dans l'outil MCP status).
+ExecStart=/usr/local/sbin/infra-mcp-admin update --auto
+StandardInput=null
+TimeoutStartSec=1h
