@@ -1,6 +1,7 @@
 """Appels à Ansible. Jamais de shell : arguments en liste, entrées validées."""
 
 import asyncio
+import contextlib
 import importlib.metadata
 import json
 import os
@@ -22,10 +23,29 @@ _PLAYBOOK_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 _SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault)", re.I)
 
 _apply_lock = asyncio.Lock()
+# Partagées par toutes les lectures qui lancent ansible-playbook : plan, status,
+# logs, stack_status…
 _plan_slots = asyncio.Semaphore(config.MAX_PLANS)
 # Lectures de l'inventaire (ansible-inventory) : accessibles avec un token read,
 # bornées elles aussi pour ne pas saturer le contrôleur.
 _inventory_slots = asyncio.Semaphore(config.MAX_INVENTORY)
+
+
+@contextlib.asynccontextmanager
+async def read_slot():
+    """Une place de lecture : on attend qu'elle se libère plutôt que d'échouer tout
+    de suite quand l'agent lance plusieurs lectures en parallèle."""
+    try:
+        await asyncio.wait_for(_plan_slots.acquire(), config.SLOT_WAIT)
+    except asyncio.TimeoutError:
+        raise ToolError(
+            f"déjà {config.MAX_PLANS} lectures en cours (plan, status, logs…) "
+            f"depuis plus de {config.SLOT_WAIT} s, réessaie plus tard"
+        ) from None
+    try:
+        yield
+    finally:
+        _plan_slots.release()
 
 
 def check_limit(limit: str) -> str:
@@ -95,13 +115,17 @@ async def run(*args: str, timeout: int | None = None, env: dict | None = None,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout or config.PLAYBOOK_TIMEOUT)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        # Délai dépassé, ou appel annulé (client parti) : sans ça, ansible-playbook
+        # continuerait seul sur le parc.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        await proc.wait()  # sinon le processus reste zombie
-        raise ToolError("délai dépassé, exécution interrompue")
+        await asyncio.shield(proc.wait())  # sinon le processus reste zombie
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise ToolError("délai dépassé, exécution interrompue") from None
     return {
         "returncode": proc.returncode,
         "output": out.decode(errors="replace"),
@@ -166,9 +190,7 @@ async def playbook(name: str, limit: str, check: bool) -> dict:
     await check_repo()
     if check:
         args.append("--check")
-        if _plan_slots.locked():
-            raise ToolError(f"déjà {config.MAX_PLANS} plan en cours, réessaie plus tard")
-        async with _plan_slots:
+        async with read_slot():
             res = await run(*args)
     else:
         # Un seul apply à la fois : deux exécutions concurrentes sur le même parc = état imprévisible.

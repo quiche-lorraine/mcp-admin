@@ -11,7 +11,7 @@ import re
 
 from fastmcp.exceptions import ToolError
 
-from . import config, runner
+from . import runner
 
 _UNIT_RE = re.compile(r"^[A-Za-z0-9@_.:-]+$")
 _STACK_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -128,9 +128,7 @@ async def run(name: str, extra: dict, *, limit: str | None = None, check: bool =
         async with runner._apply_lock:
             res = await runner.run(*args, env=env, separate_stderr=True)
     else:
-        if runner._plan_slots.locked():
-            raise ToolError(f"déjà {config.MAX_PLANS} lectures en cours, réessaie plus tard")
-        async with runner._plan_slots:
+        async with runner.read_slot():
             res = await runner.run(*args, env=env, separate_stderr=True)
     hosts = parse_json_output(res["output"])
     if not hosts:

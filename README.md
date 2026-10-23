@@ -49,8 +49,10 @@ pas `apply` dans la liste des outils.
   requête : une révocation est immédiate, sans redémarrage.
 - Chaque appel (refus compris) est journalisé dans `audit.jsonl` avec le token
   utilisé, les arguments et la durée.
-- Un seul `apply` à la fois, et au plus `INFRA_MCP_MAX_PLANS` (2) `plan`
-  simultanés : un token read ne peut pas saturer le contrôleur ni le parc.
+- Un seul `apply` à la fois, et au plus `INFRA_MCP_MAX_PLANS` (2) lectures
+  simultanées (`plan`, `status`, `logs`, `stack_status`…) : un token read ne peut
+  pas saturer le contrôleur ni le parc. Une lecture de plus attend qu'une place se
+  libère, au plus `INFRA_MCP_SLOT_WAIT` (300) secondes, avant d'être refusée.
 - Les entrées sont validées : `limit` n'accepte que des noms d'hôtes ou de
   groupes, `playbook` que des fichiers de `playbooks/` du repo de config.
 
