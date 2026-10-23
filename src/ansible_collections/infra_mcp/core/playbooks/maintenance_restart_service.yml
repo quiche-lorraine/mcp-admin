@@ -8,8 +8,10 @@
   vars:
     _unit: "{{ maintenance_service if '.' in maintenance_service else maintenance_service ~ '.service' }}"
     _controller: "{{ (ansible_host | default(inventory_hostname)) in ['127.0.0.1', 'localhost', '::1'] }}"
-    # Redémarrer infra-mcp couperait l'exécution en cours : différé de quelques secondes.
-    _deferred: "{{ _controller and _unit == 'infra-mcp.service' }}"
+    # Différés de quelques secondes, une fois ce playbook terminé : redémarrer
+    # infra-mcp couperait l'exécution en cours, et infra-mcp-update attend
+    # qu'aucun ansible-playbook ne tourne (il attendrait celui-ci, qui l'attend).
+    _deferred: "{{ _controller and _unit in ['infra-mcp.service', 'infra-mcp-update.service'] }}"
   tasks:
     - name: Paramètres valides, ssh exclu
       ansible.builtin.assert:
@@ -30,9 +32,9 @@
         fail_msg: "{{ _unit }} : unité inconnue sur {{ inventory_hostname }}"
         quiet: true
 
-    - name: Redémarrage différé d'infra-mcp
+    - name: Redémarrage différé
       ansible.builtin.command:
-        argv: [systemd-run, --on-active=5, --collect, systemctl, restart, infra-mcp.service]
+        argv: [systemd-run, --on-active=5, --collect, systemctl, restart, "{{ _unit }}"]
       changed_when: true
       when: _deferred
 

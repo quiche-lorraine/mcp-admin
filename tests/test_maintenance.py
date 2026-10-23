@@ -176,6 +176,24 @@ def test_playbooks_du_socle():
         assert lint.real_execution_violations(path) == [], path
 
 
+@pytest.mark.parametrize("unit, controller, deferred", [
+    ("infra-mcp.service", True, True),
+    # infra-mcp-update attend qu'aucun ansible-playbook ne tourne : relancé par
+    # ce playbook sans délai, il l'attendrait pendant que celui-ci l'attend.
+    ("infra-mcp-update.service", True, True),
+    ("docker.service", True, False),
+    ("infra-mcp.service", False, False),
+])
+def test_redemarrages_differes(unit, controller, deferred):
+    import jinja2
+    import yaml
+
+    play = yaml.safe_load((COLLECTION_DIR / "playbooks" / "maintenance_restart_service.yml").read_text())[0]
+    rendered = jinja2.Environment().from_string(play["vars"]["_deferred"]).render(
+        _controller=controller, _unit=unit)
+    assert rendered == str(deferred)
+
+
 async def test_repo_hors_lint_rien_n_est_execute(monkeypatch):
     """Comme plan et apply : un repo déployé qui ne passe pas le lint bloque tout."""
     from infra_mcp import runner
