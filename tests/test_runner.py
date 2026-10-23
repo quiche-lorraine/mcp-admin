@@ -163,13 +163,57 @@ async def test_plans_simultanes_bornes(monkeypatch):
         return {"returncode": 0, "output": ""}
 
     monkeypatch.setattr(runner, "run", fake_run)
+    monkeypatch.setattr(config, "SLOT_WAIT", 0.05)
     plans = [asyncio.create_task(runner.playbook("site", "all", check=True)) for _ in range(config.MAX_PLANS)]
     await started.wait()
-    with pytest.raises(ToolError, match="plan en cours"):
+    with pytest.raises(ToolError, match="lectures en cours"):
         await runner.playbook("site", "all", check=True)
     release.set()
     assert [(await p)["returncode"] for p in plans] == [0] * config.MAX_PLANS
     assert (await runner.playbook("site", "all", check=True))["returncode"] == 0  # place libérée
+
+
+async def test_une_lecture_de_trop_attend_sa_place(monkeypatch):
+    # L'agent lance status, logs et plan en parallèle : le troisième attend au lieu
+    # d'échouer.
+    started, release = asyncio.Event(), asyncio.Event()
+    running = 0
+
+    async def fake_run(*args, timeout=None):
+        nonlocal running
+        running += 1
+        if running == config.MAX_PLANS:
+            started.set()
+        await release.wait()
+        return {"returncode": 0, "output": ""}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    plans = [asyncio.create_task(runner.playbook("site", "all", check=True)) for _ in range(config.MAX_PLANS)]
+    await started.wait()
+    extra = asyncio.create_task(runner.playbook("site", "all", check=True))
+    await asyncio.sleep(0.05)
+    assert not extra.done()
+    release.set()
+    assert (await extra)["returncode"] == 0
+    assert [(await p)["returncode"] for p in plans] == [0] * config.MAX_PLANS
+
+
+async def test_appel_annule_tue_ansible(tmp_path, monkeypatch):
+    # Client parti en cours d'appel : ansible-playbook ne doit pas continuer seul,
+    # et la place de lecture est rendue.
+    monkeypatch.setattr(config, "ANSIBLE_DIR", tmp_path)
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(runner.run("sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"))
+    for _ in range(100):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+    pid = int(pidfile.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 async def test_rien_n_est_execute_si_le_repo_ne_passe_pas_le_lint(monkeypatch, tmp_path):
