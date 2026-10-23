@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- `restart_service` sur `infra-mcp-update.service` (contrôleur) est différé
+  comme pour `infra-mcp.service` : la mise à jour attend qu'aucun
+  `ansible-playbook` ne tourne, elle attendait donc celui qui la relançait,
+  pendant 30 minutes, avant d'abandonner.
+
 ## 0.5.0
 
 - Rôle `crowdsec`, appliqué par `site` à tous les serveurs (sauf

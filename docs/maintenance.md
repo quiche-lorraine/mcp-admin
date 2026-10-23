@@ -76,7 +76,9 @@ dit à l'agent.
 **Le contrôleur** est l'hôte joint en local (`ansible_host` à `127.0.0.1` ou
 `localhost`). Le redémarrer couperait l'exécution en cours. Pour cet hôte,
 `reboot` programme donc le redémarrage dans une minute (`shutdown -r +1`) et
-répond tout de suite. `restart_service` sur `infra-mcp.service` fait de même.
+répond tout de suite. `restart_service` sur `infra-mcp.service` ou
+`infra-mcp-update.service` fait de même : le redémarrage part quelques secondes
+après la réponse.
 
 ## Ce qui ne change pas
 
