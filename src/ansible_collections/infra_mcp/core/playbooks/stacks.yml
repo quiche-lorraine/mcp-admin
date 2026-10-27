@@ -10,6 +10,13 @@
 # Chaque service porte donc le label infra.stack-hash (empreinte du compose) ; en
 # plan, on le compare à celui des services qui tournent pour annoncer les
 # créations, modifications et suppressions.
+#
+# Deux sortes de secrets Docker :
+# - swarm_secrets : nom → valeur, en général une variable vault_* ;
+# - swarm_secrets_generated : noms seuls. Le secret est créé avec une valeur
+#   aléatoire au premier apply, puis n'est plus jamais modifié. Pour ce qui doit
+#   seulement être secret et stable (clé d'application, mot de passe entre deux
+#   conteneurs) : la valeur ne passe ni par le repo, ni par personne.
 
 - name: Stacks Swarm
   hosts: swarm_managers[0]
@@ -17,6 +24,7 @@
   vars:
     stacks_path: "{{ stacks_dir | default(inventory_dir ~ '/../stacks') }}"
     stacks_networks: "{{ swarm_networks | default([]) }}"
+    stacks_generated: "{{ swarm_secrets_generated | default([]) }}"
   pre_tasks:
     - name: Noms des variables vault
       ansible.builtin.import_tasks: tasks/vault-names.yml
@@ -53,13 +61,23 @@
         quiet: true
       loop: "{{ stacks_networks }}"
 
+    - name: Les secrets générés ont un nom valide, distinct de swarm_secrets
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item is regex('[a-zA-Z0-9][a-zA-Z0-9_.-]*', match_type='fullmatch')
+          - item not in swarm_secrets
+        fail_msg: "swarm_secrets_generated : {{ item }} : nom invalide ou déjà dans swarm_secrets"
+        quiet: true
+      loop: "{{ stacks_generated }}"
+
     - name: Les secrets utilisés sont déclarés dans swarm_secrets
       ansible.builtin.assert:
         that: _missing | length == 0
-        fail_msg: "stack {{ item.name }} : secrets absents de swarm_secrets : {{ _missing | join(', ') }}"
+        fail_msg: "stack {{ item.name }} : secrets absents de swarm_secrets et swarm_secrets_generated : {{ _missing | join(', ') }}"
         quiet: true
       vars:
-        _missing: "{{ item.secrets | default([]) | difference(swarm_secrets.keys() | list) }}"
+        _missing: "{{ item.secrets | default([]) | difference(swarm_secrets.keys() | list + stacks_generated) }}"
       loop: "{{ swarm_stacks }}"
       loop_control:
         label: "{{ item.name }}"
@@ -84,11 +102,36 @@
       no_log: true
       register: stacks_secrets
 
+    # Le module ne lit pas les secrets existants sans les réécrire : on les liste.
+    # La commande est sautée en plan, qui annonce alors seulement la règle.
+    - name: Secrets générés déjà présents
+      ansible.builtin.command:
+        argv: [docker, secret, ls, --format, "{{ '{{' }}.Name{{ '}}' }}"]
+      register: stacks_generated_existing
+      changed_when: false
+      when: stacks_generated | length > 0
+
+    - name: Secrets générés
+      community.docker.docker_secret:
+        name: "{{ item }}"
+        # /dev/null : la valeur n'est écrite nulle part sur le contrôleur.
+        data: "{{ lookup('ansible.builtin.password', '/dev/null', length=64, chars=['ascii_letters', 'digits']) }}"
+      loop: "{{ stacks_generated }}"
+      when: not ansible_check_mode and item not in stacks_generated_existing.stdout_lines
+      no_log: true
+
+    - name: Secrets générés en plan
+      ansible.builtin.debug:
+        msg: "{{ item }} : créé avec une valeur aléatoire au premier apply s'il n'existe pas, jamais modifié ensuite"
+      loop: "{{ stacks_generated }}"
+      when: ansible_check_mode
+
     - name: Version courante de chaque secret
       ansible.builtin.set_fact:
         stacks_secret_versions: >-
           {{ dict(stacks_secrets.results | map(attribute='item.key')
-                  | zip(stacks_secrets.results | map(attribute='secret_name', default='(nouveau)'))) }}
+                  | zip(stacks_secrets.results | map(attribute='secret_name', default='(nouveau)')))
+             | combine(dict(stacks_generated | zip(stacks_generated))) }}
 
     # --- Réseaux partagés ---------------------------------------------------------
     # Retirer un réseau de swarm_networks ne le supprime pas. Un réseau du même nom

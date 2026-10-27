@@ -346,7 +346,7 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     for net in _shared_networks(config):
         if not isinstance(net, str) or not NETWORK_NAME_RE.fullmatch(net) or net in RESERVED_NETWORKS:
             found.append(f"swarm_networks : nom invalide ou réservé : {net!r}")
-    declared = set((config.get("swarm_secrets") or {}).keys())
+    declared = set((config.get("swarm_secrets") or {}).keys()) | set(config.get("swarm_secrets_generated") or [])
     names = [s["name"] for s in config.get("swarm_stacks") or []]
     found += [f"stack {n} : dans swarm_stacks et swarm_stacks_absent" for n in set(names) & set(config.get("swarm_stacks_absent") or [])]
     for stack in config.get("swarm_stacks") or []:
@@ -359,7 +359,7 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
         if used - listed:
             found.append(f"stack {stack['name']} : secrets du compose absents de swarm_stacks : {sorted(used - listed)}")
         if listed - declared:
-            found.append(f"stack {stack['name']} : secrets absents de swarm_secrets : {sorted(listed - declared)}")
+            found.append(f"stack {stack['name']} : secrets absents de swarm_secrets et swarm_secrets_generated : {sorted(listed - declared)}")
     return found
 
 

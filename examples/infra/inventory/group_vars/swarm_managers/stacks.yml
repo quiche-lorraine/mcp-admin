@@ -18,3 +18,8 @@ swarm_networks: []
 # version du secret et redéploie les stacks qui l'utilisent.
 swarm_secrets: {}
 #  whoami_token: "{{ vault_whoami_token }}"
+
+# Secrets Docker créés une fois avec une valeur aléatoire, jamais modifiés ensuite :
+# clé d'application, mot de passe entre deux conteneurs… Rien à mettre dans le vault.
+swarm_secrets_generated: []
+#  - whoami_signing_key

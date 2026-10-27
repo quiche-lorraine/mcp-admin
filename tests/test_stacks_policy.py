@@ -46,7 +46,21 @@ def test_incoherences_d_inventaire_detectees(tmp_path):
     assert "app : dans swarm_stacks et swarm_stacks_absent" in problems
     assert "absente" in problems and "absent" in problems
     assert "secrets du compose absents de swarm_stacks : ['db']" in problems
-    assert "secrets absents de swarm_secrets : ['api']" in problems
+    assert "secrets absents de swarm_secrets et swarm_secrets_generated : ['api']" in problems
+
+
+def test_secret_genere_accepte(tmp_path):
+    vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
+    vars_dir.mkdir(parents=True)
+    (tmp_path / "stacks" / "app").mkdir(parents=True)
+    (tmp_path / "stacks" / "app" / "compose.yml").write_text(yaml.safe_dump(
+        {"services": {"web": {"image": "nginx:1.27.2"}}, "secrets": {"key": {"external": True}}}))
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({
+        "swarm_stacks": [{"name": "app", "secrets": ["key"]}],
+        "swarm_secrets": {},
+        "swarm_secrets_generated": ["key"],
+    }))
+    assert lint.stacks_inventory_violations(tmp_path) == []
 
 
 def test_reseaux_partages_mal_nommes(tmp_path):
