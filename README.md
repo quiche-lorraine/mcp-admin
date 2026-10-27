@@ -182,6 +182,13 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   ansible-vault create inventory/group_vars/swarm_managers/vault.yml
   ansible-vault edit   inventory/group_vars/swarm_managers/vault.yml
   ```
+- **Secrets générés** : pour une valeur qui doit seulement être secrète et
+  stable (clé d'application, mot de passe entre deux conteneurs), il suffit de
+  lister son nom dans `swarm_secrets_generated`. Le secret Docker est créé avec
+  une valeur aléatoire au premier `apply stacks`, puis n'est plus jamais
+  modifié : la valeur ne passe ni par le repo ni par personne. Pour en changer,
+  supprimer le secret à la main (`docker secret rm`) une fois les stacks qui
+  l'utilisent arrêtées.
 - **plan** : `docker_stack` ne sait pas simuler. Chaque service porte l'empreinte
   de son compose (label `infra.stack-hash`) ; `plan stacks` la compare à celle
   qui tourne et annonce « à créer », « à redéployer » ou « à supprimer ».

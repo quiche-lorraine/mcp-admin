@@ -59,12 +59,13 @@ class Env:
     def compose_path(self):
         return self.stacks / STACK / "compose.yml"
 
-    def config(self, stacks, absent=(), networks=()):
+    def config(self, stacks, absent=(), networks=(), generated=()):
         (self.vars_dir / "stacks.yml").write_text(yaml.safe_dump({
             "stacks_install_prereqs": False,
             "swarm_stacks": stacks,
             "swarm_stacks_absent": list(absent),
             "swarm_secrets": {SECRET: "{{ vault_token }}"},
+            "swarm_secrets_generated": list(generated),
             "swarm_networks": list(networks),
         }))
 
@@ -166,6 +167,39 @@ def test_reseau_partage(env):
     # 3. idempotent
     assert env.run("--check")["changed"] == 0
     assert env.run()["changed"] == 0
+
+
+def test_secret_genere(env):
+    generated = f"{SECRET}_gen"
+    compose = yaml.safe_load(env.compose_path.read_text())
+    compose["services"]["web"]["secrets"] = [SECRET, generated]
+    compose["secrets"][generated] = {"external": True}
+    env.compose_path.write_text(yaml.safe_dump(compose))
+
+    # 1. utilisé par la stack sans être déclaré : refusé
+    env.config(stacks=[{"name": STACK, "secrets": [SECRET, generated]}])
+    env.run("--check", ok=False)
+    assert f"secrets absents de swarm_secrets et swarm_secrets_generated : {generated}" in env.log
+
+    # 2. déclaré : plan annonce la règle et ne crée rien, apply le crée
+    env.config(stacks=[{"name": STACK, "secrets": [SECRET, generated]}], generated=[generated])
+    assert env.run("--check")["changed"] == 2  # secret du vault, stack
+    assert "jamais modifié ensuite" in env.log
+    assert generated not in docker("secret", "ls", "--format", "{{.Name}}").split()
+    assert env.run()["changed"] == 3  # secret du vault, secret généré, stack
+    created = docker("secret", "inspect", "--format", "{{.ID}}", generated)
+    names = [s["SecretName"] for s in env.service()["TaskTemplate"]["ContainerSpec"]["Secrets"]]
+    assert generated in names, names
+
+    # 3. jamais régénéré : même secret, rien à faire
+    assert env.run("--check")["changed"] == 0
+    assert env.run()["changed"] == 0
+    assert docker("secret", "inspect", "--format", "{{.ID}}", generated) == created
+
+    # 4. un même nom dans les deux listes : refusé
+    env.config(stacks=[{"name": STACK, "secrets": [SECRET]}], generated=[SECRET])
+    env.run("--check", ok=False)
+    assert "nom invalide ou déjà dans swarm_secrets" in env.log
 
 
 def test_variable_vault_mal_nommee_refusee(env):

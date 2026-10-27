@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- `swarm_secrets_generated` : secrets Docker créés avec une valeur aléatoire au
+  premier `apply stacks`, jamais modifiés ensuite. Rien à mettre dans le vault
+  pour une clé d'application ou un mot de passe interne à une stack.
+
 ## 0.5.1
 
 - `restart_service` sur `infra-mcp-update.service` (contrôleur) est différé
