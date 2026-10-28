@@ -178,10 +178,23 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   la stack les liste dans `secrets`. Changer une valeur crée une nouvelle
   version (`nom_v2`…) et redéploie les stacks concernées.
 
+  Pour ajouter ou remplacer un secret, depuis la racine d'un clone du repo de
+  config, sur ton poste :
+
   ```bash
-  ansible-vault create inventory/group_vars/swarm_managers/vault.yml
-  ansible-vault edit   inventory/group_vars/swarm_managers/vault.yml
+  infra-mcp secret set playtrail_mailer_dsn        # valeur saisie sans écho
+  pass show mailer | infra-mcp secret set playtrail_mailer_dsn   # ou lue sur stdin
   ```
+
+  La commande demande le mot de passe vault (ou lit
+  `ANSIBLE_VAULT_PASSWORD_FILE`), chiffre la valeur dans `vault.yml` sous
+  `vault_<nom>` (le fichier est créé s'il n'existe pas) et déclare le secret
+  dans `swarm_secrets`, sans toucher au reste de `stacks.yml`. La valeur
+  n'apparaît ni à l'écran ni dans le diff. Reste à lister le secret dans la
+  stack qui l'utilise, puis à committer. Pour installer seulement la commande :
+  `pipx install "infra-mcp @ git+https://github.com/<owner>/mcp-admin@<commit>"`.
+  `ansible-vault edit inventory/group_vars/swarm_managers/vault.yml` reste
+  possible pour le reste (retirer une variable, par exemple).
 - **Secrets générés** : pour une valeur qui doit seulement être secrète et
   stable (clé d'application, mot de passe entre deux conteneurs), il suffit de
   lister son nom dans `swarm_secrets_generated`. Le secret Docker est créé avec
