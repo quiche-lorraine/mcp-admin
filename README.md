@@ -74,7 +74,8 @@ n'apporte que des données) :
 - rien lu sur le contrôleur : lookups limités à une liste sûre (`vars`,
   `template`…), pas de `src` / `vars_files` hors du repo ;
 - secrets : fichiers chiffrés nommés `vault.yml`, pas de `!vault` en ligne,
-  variables `vault_*` utilisées seulement par `swarm_secrets`.
+  variables `vault_*` utilisées seulement par `swarm_secrets` et les
+  `password` de `swarm_registries`.
 
 C'est une défense en profondeur : la relecture des PR, une branche principale
 protégée et la surveillance des changements restent la vraie barrière.
@@ -202,6 +203,29 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   modifié : la valeur ne passe ni par le repo ni par personne. Pour en changer,
   supprimer le secret à la main (`docker secret rm`) une fois les stacks qui
   l'utilisent arrêtées.
+- **Registres privés** : pour une image privée (ghcr.io d'un repo privé…),
+  déclare le registre dans `swarm_registries`. Le manager s'y connecte avant de
+  déployer et transmet les identifiants aux nœuds ; `plan stacks` teste la
+  connexion sans rien écrire. Pour ghcr.io, un token *classic* avec le seul
+  scope `read:packages`, d'un compte qui a accès au package :
+
+  ```bash
+  infra-mcp registry set ghcr.io <compte-github>   # token saisi sans écho
+  ```
+
+  La commande chiffre le token dans `vault.yml` sous `vault_registry_ghcr_io` et
+  ajoute l'entrée à `stacks.yml` ; la relancer remplace le token. Le compose
+  désigne alors l'image complète (`ghcr.io/<owner>/<image>:<tag>`). Les
+  identifiants restent dans `/root/.docker/config.json` du manager : retirer un
+  registre de la liste ne le déconnecte pas (`docker logout <registre>`).
+
+  ```yaml
+  # group_vars/swarm_managers/stacks.yml
+  swarm_registries:
+    ghcr.io:
+      username: <compte-github>
+      password: "{{ vault_registry_ghcr_io }}"
+  ```
 - **plan** : `docker_stack` ne sait pas simuler. Chaque service porte l'empreinte
   de son compose (label `infra.stack-hash`) ; `plan stacks` la compare à celle
   qui tourne et annonce « à créer », « à redéployer » ou « à supprimer ».

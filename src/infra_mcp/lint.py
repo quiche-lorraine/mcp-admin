@@ -8,7 +8,7 @@ dans le repo de config, où on pourrait les retirer en même temps qu'on les enf
 - le repo de config n'apporte que des données : ni code, ni tâche sur le
   contrôleur, ni lecture de ses fichiers (voir data_only_violations) ;
 - secrets : fichiers vault nommés vault.yml, variables vault_* utilisées seulement
-  par swarm_secrets ;
+  par swarm_secrets et les password de swarm_registries ;
 - pas de group_vars/x.yml à côté de group_vars/x/ (Ansible ignore alors le fichier) ;
 - stacks : politique de sécurité des compose et cohérence avec l'inventaire.
 """
@@ -130,10 +130,15 @@ def _data_violations(node, path_keys_ok=True):
 
 
 def _vault_refs(node, top=True):
-    """Références à vault_* ailleurs que dans swarm_secrets."""
+    """Références à vault_* ailleurs que dans swarm_secrets et les password de swarm_registries."""
     if isinstance(node, dict):
         for key, value in node.items():
             if top and key == "swarm_secrets":
+                continue
+            if top and key == "swarm_registries" and isinstance(value, dict):
+                for reg in value.values():
+                    rest = {k: v for k, v in reg.items() if k != "password"} if isinstance(reg, dict) else reg
+                    yield from _vault_refs(rest, top=False)
                 continue
             yield from _vault_refs(value, top=False)
     elif isinstance(node, list):
@@ -173,7 +178,7 @@ def data_only_violations(config_dir: Path) -> list[str]:
         data = yaml.load(text, Loader=_Loader)
         found += [f"{rel} : {v}" for v in _data_violations(data)]
         if ".github" not in rel.parts:
-            found += [f"{rel} : {v!r} : vault_* n'est utilisable que dans swarm_secrets (sinon il apparaît dans la sortie de plan)"
+            found += [f"{rel} : {v!r} : vault_* n'est utilisable que dans swarm_secrets et swarm_registries (sinon il apparaît dans la sortie de plan)"
                       for v in _vault_refs(data)]
     cfg_path = config_dir / "ansible.cfg"
     if cfg_path.exists():
@@ -331,6 +336,10 @@ def _stacks_config(ansible_dir: Path) -> dict:
     return (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
 
 
+# Nom d'hôte d'un registre, avec un port éventuel : ghcr.io, registry.example.fr:5000.
+REGISTRY_RE = re.compile(r"[a-z0-9][a-z0-9.-]*(:[0-9]+)?")
+
+
 def _shared_networks(config: dict) -> list:
     networks = config.get("swarm_networks") or []
     return networks if isinstance(networks, list) else []
@@ -346,6 +355,15 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     for net in _shared_networks(config):
         if not isinstance(net, str) or not NETWORK_NAME_RE.fullmatch(net) or net in RESERVED_NETWORKS:
             found.append(f"swarm_networks : nom invalide ou réservé : {net!r}")
+    registries = config.get("swarm_registries") or {}
+    if not isinstance(registries, dict):
+        found.append("swarm_registries : dictionnaire registre → {username, password} attendu")
+        registries = {}
+    for reg, cred in registries.items():
+        if not isinstance(reg, str) or not REGISTRY_RE.fullmatch(reg):
+            found.append(f"swarm_registries : {reg!r} : nom d'hôte attendu, sans https:// (ex. ghcr.io)")
+        elif not isinstance(cred, dict) or not cred.get("username") or not cred.get("password"):
+            found.append(f"swarm_registries : {reg} : username et password attendus")
     declared = set((config.get("swarm_secrets") or {}).keys()) | set(config.get("swarm_secrets_generated") or [])
     names = [s["name"] for s in config.get("swarm_stacks") or []]
     found += [f"stack {n} : dans swarm_stacks et swarm_stacks_absent" for n in set(names) & set(config.get("swarm_stacks_absent") or [])]

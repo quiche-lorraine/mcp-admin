@@ -17,6 +17,11 @@
 #   aléatoire au premier apply, puis n'est plus jamais modifié. Pour ce qui doit
 #   seulement être secret et stable (clé d'application, mot de passe entre deux
 #   conteneurs) : la valeur ne passe ni par le repo, ni par personne.
+#
+# swarm_registries : registres privés (ghcr.io…), registre → username + password
+# (une variable vault_*). Le manager s'y connecte avant de déployer et transmet
+# les identifiants aux nœuds (with_registry_auth). En plan, la connexion est
+# testée sans rien écrire.
 
 - name: Stacks Swarm
   hosts: swarm_managers[0]
@@ -25,6 +30,7 @@
     stacks_path: "{{ stacks_dir | default(inventory_dir ~ '/../stacks') }}"
     stacks_networks: "{{ swarm_networks | default([]) }}"
     stacks_generated: "{{ swarm_secrets_generated | default([]) }}"
+    stacks_registries: "{{ swarm_registries | default({}) }}"
   pre_tasks:
     - name: Noms des variables vault
       ansible.builtin.import_tasks: tasks/vault-names.yml
@@ -70,6 +76,22 @@
         fail_msg: "swarm_secrets_generated : {{ item }} : nom invalide ou déjà dans swarm_secrets"
         quiet: true
       loop: "{{ stacks_generated }}"
+
+    # Boucles sur les noms seuls : un résultat de tâche affiche son item, il ne
+    # doit pas contenir le password.
+    - name: Les registres ont un nom d'hôte, un username et un password
+      ansible.builtin.assert:
+        that:
+          - item is regex('[a-z0-9][a-z0-9.-]*(:[0-9]+)?', match_type='fullmatch')
+          - _reg is mapping
+          - _reg.username | default('') is string
+          - _reg.username | default('') | length > 0
+          - _reg.password | default('') | length > 0
+        fail_msg: "swarm_registries : {{ item }} : nom d'hôte invalide, ou username / password manquant"
+        quiet: true
+      vars:
+        _reg: "{{ stacks_registries[item] }}"
+      loop: "{{ stacks_registries.keys() | list }}"
 
     - name: Les secrets utilisés sont déclarés dans swarm_secrets
       ansible.builtin.assert:
@@ -146,6 +168,18 @@
         driver_options:
           encrypted: "true"
       loop: "{{ stacks_networks }}"
+
+    # --- Registres privés ---------------------------------------------------------
+    # Identifiants dans /root/.docker/config.json du manager. Retirer un registre
+    # de la liste ne le déconnecte pas : docker logout <registre> sur le manager.
+
+    - name: Connexion aux registres privés
+      community.docker.docker_login:
+        registry_url: "{{ item }}"
+        username: "{{ stacks_registries[item].username }}"
+        # Paramètre no_log du module : masqué dans la sortie, erreurs comprises.
+        password: "{{ stacks_registries[item].password }}"
+      loop: "{{ stacks_registries.keys() | list }}"
 
     # --- Stacks -------------------------------------------------------------------
 

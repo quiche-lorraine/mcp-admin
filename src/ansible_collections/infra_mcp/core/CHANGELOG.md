@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- `swarm_registries` : registres privés (ghcr.io…) d'où les stacks tirent leurs
+  images. Le manager s'y connecte avant de déployer, avec un token du vault, et
+  transmet les identifiants aux nœuds. `plan stacks` teste la connexion sans
+  rien écrire. Le token s'ajoute avec `infra-mcp registry set`.
+
 ## 0.6.0
 
 - `swarm_secrets_generated` : secrets Docker créés avec une valeur aléatoire au

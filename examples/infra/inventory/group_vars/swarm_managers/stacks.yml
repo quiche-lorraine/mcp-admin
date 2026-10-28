@@ -23,3 +23,11 @@ swarm_secrets: {}
 # clé d'application, mot de passe entre deux conteneurs… Rien à mettre dans le vault.
 swarm_secrets_generated: []
 #  - whoami_signing_key
+
+# Registres privés dont les stacks tirent des images (ghcr.io…) : le manager s'y
+# connecte avant de déployer. Le token est chiffré dans vault.yml, ajouté avec
+# infra-mcp registry set <registre> <username>.
+swarm_registries: {}
+#  ghcr.io:
+#    username: quiche-lorraine
+#    password: "{{ vault_registry_ghcr_io }}"

@@ -1,4 +1,4 @@
-"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | secret set <nom> | token create <read|write> <label> | token list | token revoke <id>"""
+"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | secret set <nom> | registry set <registre> <username> | token create <read|write> <label> | token list | token revoke <id>"""
 
 import argparse
 import json
@@ -25,6 +25,14 @@ def main() -> None:
     sec_set = sec.add_parser("set", help="ajoute ou remplace un secret (valeur saisie sans écho, ou lue sur stdin)")
     sec_set.add_argument("name", help="nom du secret Docker, ex. playtrail_mailer_dsn")
     sec_set.add_argument("--repo", type=Path, default=Path("."), help="racine du repo de config (défaut : dossier courant)")
+
+    reg = sub.add_parser("registry", help="registres privés, depuis un clone du repo de config").add_subparsers(
+        dest="action", required=True
+    )
+    reg_set = reg.add_parser("set", help="ajoute ou remplace le token d'un registre (saisi sans écho, ou lu sur stdin)")
+    reg_set.add_argument("registry", help="nom d'hôte du registre, ex. ghcr.io")
+    reg_set.add_argument("username", help="compte qui possède le token")
+    reg_set.add_argument("--repo", type=Path, default=Path("."), help="racine du repo de config (défaut : dossier courant)")
 
     tok = sub.add_parser("token", help="gère les tokens d'accès").add_subparsers(
         dest="action", required=True
@@ -80,6 +88,13 @@ def main() -> None:
             print(set_secret(args.repo, args.name, _read_value(), _vault_password(args.repo)))
         except VaultError as exc:
             sys.exit(str(exc))
+    elif args.cmd == "registry":
+        from .vault import VaultError, set_registry
+
+        try:
+            print(set_registry(args.repo, args.registry, args.username, _read_value("Token du registre"), _vault_password(args.repo)))
+        except VaultError as exc:
+            sys.exit(str(exc))
     elif args.action == "create":
         token = tokens.create(config.TOKENS_FILE, args.level, args.label)
         print(token)
@@ -92,12 +107,12 @@ def main() -> None:
         print("révoqué")
 
 
-def _read_value() -> str:
+def _read_value(label: str = "Valeur") -> str:
     if not sys.stdin.isatty():
         return sys.stdin.read().removesuffix("\n")
     from getpass import getpass
 
-    value = getpass("Valeur (sans écho) : ")
+    value = getpass(f"{label} (sans écho) : ")
     if getpass("Encore une fois : ") != value:
         sys.exit("les deux saisies diffèrent")
     return value
