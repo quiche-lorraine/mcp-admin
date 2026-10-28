@@ -75,6 +75,25 @@ def test_reseaux_partages_mal_nommes(tmp_path):
     assert lint.stacks_inventory_violations(tmp_path) == ["swarm_networks : liste de noms de réseaux attendue"]
 
 
+def test_registres_prives(tmp_path):
+    vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"
+    vars_dir.mkdir(parents=True)
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({"swarm_stacks": [], "swarm_registries": {
+        "ghcr.io": {"username": "bot", "password": "{{ vault_registry_ghcr_io }}"},
+        "registry.example.fr:5000": {"username": "ci", "password": "{{ vault_registry_example }}"},
+        "https://ghcr.io": {"username": "bot", "password": "x"},
+        "quay.io": {"username": "bot"},
+    }}))
+    assert lint.stacks_inventory_violations(tmp_path) == [
+        "swarm_registries : 'https://ghcr.io' : nom d'hôte attendu, sans https:// (ex. ghcr.io)",
+        "swarm_registries : quay.io : username et password attendus",
+    ]
+    (vars_dir / "stacks.yml").write_text(yaml.safe_dump({"swarm_stacks": [], "swarm_registries": ["ghcr.io"]}))
+    assert lint.stacks_inventory_violations(tmp_path) == [
+        "swarm_registries : dictionnaire registre → {username, password} attendu",
+    ]
+
+
 def test_reseau_partage_accepte_par_lint(tmp_path):
     """run() passe swarm_networks à la politique des compose."""
     vars_dir = tmp_path / "inventory" / "group_vars" / "swarm_managers"

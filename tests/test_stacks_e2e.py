@@ -1,5 +1,5 @@
 """Bout en bout sur un vrai swarm : plan, apply, modification, rotation de secret,
-suppression. Lancé par le job « stacks » de la CI ; sauté s'il n'y a pas de swarm
+suppression, image tirée d'un registre privé. Lancé par le job « stacks » de la CI ; sauté s'il n'y a pas de swarm
 local (docker swarm init)."""
 
 import json
@@ -30,6 +30,9 @@ def _swarm_active() -> bool:
 pytestmark = pytest.mark.skipif(not _swarm_active(), reason="pas de swarm local (docker swarm init)")
 
 STACK, SECRET, NETWORK = "e2etest", "e2etest_token", "e2etest_shared"
+# Registre local protégé par mot de passe. 127.0.0.1 : Docker y accepte le HTTP.
+REGISTRY, REGISTRY_USER, REGISTRY_PASSWORD = "127.0.0.1:5055", "e2e", "s3cr3t-registry"
+IMAGE = "traefik/whoami:v1.10.3"
 
 
 def docker(*args) -> str:
@@ -59,7 +62,7 @@ class Env:
     def compose_path(self):
         return self.stacks / STACK / "compose.yml"
 
-    def config(self, stacks, absent=(), networks=(), generated=()):
+    def config(self, stacks, absent=(), networks=(), generated=(), registries=None):
         (self.vars_dir / "stacks.yml").write_text(yaml.safe_dump({
             "stacks_install_prereqs": False,
             "swarm_stacks": stacks,
@@ -67,6 +70,7 @@ class Env:
             "swarm_secrets": {SECRET: "{{ vault_token }}"},
             "swarm_secrets_generated": list(generated),
             "swarm_networks": list(networks),
+            "swarm_registries": registries or {},
         }))
 
     def vault(self, data):
@@ -222,4 +226,72 @@ def test_reseaux_propres_a_la_stack(env):
         net = json.loads(docker("network", "inspect", f"{STACK}_{name}"))[0]
         assert net["Options"].get("encrypted") == "true", net
         assert net["Internal"] is internal, net
+    assert env.run("--check")["changed"] == 0
+
+
+@pytest.fixture
+def registry(tmp_path):
+    """Registre privé contenant l'image de la stack, absente du cache local : le
+    swarm doit la tirer avec les identifiants."""
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / "htpasswd").write_text(docker(
+        "run", "--rm", "--entrypoint", "htpasswd", "httpd:2.4.62-alpine", "-Bbn", REGISTRY_USER, REGISTRY_PASSWORD,
+    ) + "\n")
+    docker("run", "-d", "--name", "e2etest-registry", "-p", f"{REGISTRY}:5000", "-v", f"{auth}:/auth:ro",
+           "-e", "REGISTRY_AUTH=htpasswd", "-e", "REGISTRY_AUTH_HTPASSWD_REALM=e2e",
+           "-e", "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd", "registry:2.8.3")
+    private = f"{REGISTRY}/e2e/whoami:v1.10.3"
+    # Config Docker à part pour pousser : celle du manager reste vierge.
+    cfg = str(tmp_path / "docker-push")
+    try:
+        docker("pull", IMAGE)
+        docker("tag", IMAGE, private)
+        for _ in range(30):
+            res = subprocess.run(["docker", "--config", cfg, "login", REGISTRY, "-u", REGISTRY_USER, "--password-stdin"],
+                                 input=REGISTRY_PASSWORD, capture_output=True, text=True)
+            if res.returncode == 0:
+                break
+            time.sleep(1)
+        docker("--config", cfg, "push", private)
+        docker("image", "rm", private)
+        yield private
+    finally:
+        subprocess.run(["docker", "rm", "-f", "e2etest-registry"], capture_output=True)
+        subprocess.run(["docker", "image", "rm", private], capture_output=True)
+        # Le playbook (become) a enregistré les identifiants dans la config de root.
+        subprocess.run(["sudo", "-n", "docker", "logout", REGISTRY], capture_output=True)
+        subprocess.run(["docker", "logout", REGISTRY], capture_output=True)
+
+
+def test_registre_prive(env, registry):
+    env.compose_path.write_text(env.compose_path.read_text().replace(IMAGE, registry))
+    stacks = [{"name": STACK, "secrets": [SECRET]}]
+
+    # 1. registre sans password : refusé avant toute action
+    env.config(stacks=stacks, registries={REGISTRY: {"username": REGISTRY_USER}})
+    env.run("--check", ok=False)
+    assert f"swarm_registries : {REGISTRY} : nom d'hôte invalide, ou username / password manquant" in env.log
+
+    # 2. mauvais token : plan échoue déjà (il teste la connexion)
+    env.config(stacks=stacks, registries={REGISTRY: {"username": REGISTRY_USER, "password": "{{ vault_registry }}"}})
+    env.vault({"vault_token": "s3cr3t-v1", "vault_registry": "s3cr3t-faux"})
+    env.run("--check", ok=False)
+    assert f"Logging into {REGISTRY} for user {REGISTRY_USER} failed" in env.log
+
+    # 3. bon token : plan annonce la connexion, apply déploie depuis le registre privé
+    env.vault({"vault_token": "s3cr3t-v1", "vault_registry": REGISTRY_PASSWORD})
+    assert env.run("--check")["changed"] == 3
+    assert env.run()["changed"] == 3
+    assert env.service()["TaskTemplate"]["ContainerSpec"]["Image"] == registry
+    for _ in range(60):
+        states = docker("service", "ps", f"{STACK}_web", "--filter", "desired-state=running",
+                        "--format", "{{.CurrentState}}").splitlines()
+        if len(states) == 2 and all(s.startswith("Running") for s in states):
+            break
+        time.sleep(2)
+    else:
+        pytest.fail(docker("service", "ps", "--no-trunc", f"{STACK}_web"))
+
+    # 4. déjà connecté : plus rien à faire
     assert env.run("--check")["changed"] == 0

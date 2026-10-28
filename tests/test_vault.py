@@ -1,4 +1,5 @@
-"""infra-mcp secret set : le secret arrive chiffré dans vault.yml et déclaré dans swarm_secrets."""
+"""infra-mcp secret set / registry set : la valeur arrive chiffrée dans vault.yml et déclarée dans
+swarm_secrets ou swarm_registries."""
 
 import os
 import shutil
@@ -10,7 +11,7 @@ import yaml
 
 from conftest import ANSIBLE_DIR
 from infra_mcp import lint
-from infra_mcp.vault import VARS_DIR, VaultError, read_vault, set_secret
+from infra_mcp.vault import VARS_DIR, VaultError, read_vault, set_registry, set_secret
 
 PASSWORD = "test-password"
 
@@ -97,3 +98,50 @@ def test_commande(repo, tmp_path):
     assert res.returncode == 0, res.stderr
     assert "s3cr3t" not in res.stdout + res.stderr
     assert read_vault(repo / VARS_DIR / "vault.yml", PASSWORD) == {"vault_whoami_token": "s3cr3t"}
+
+
+def test_registre(repo):
+    out = set_registry(repo, "ghcr.io", "quiche-lorraine", "ghp_s3cr3t", PASSWORD)
+    assert "vault_registry_ghcr_io ajoutée" in out and "ghcr.io ajouté à swarm_registries" in out
+    assert read_vault(repo / VARS_DIR / "vault.yml", PASSWORD) == {"vault_registry_ghcr_io": "ghp_s3cr3t"}
+    assert stacks(repo)["swarm_registries"] == {
+        "ghcr.io": {"username": "quiche-lorraine", "password": "{{ vault_registry_ghcr_io }}"},
+    }
+    text = (repo / VARS_DIR / "stacks.yml").read_text()
+    assert "#    password: \"{{ vault_registry_ghcr_io }}\"" in text and "swarm_secrets: {}" in text
+    assert lint.run(repo) == []
+    # Nouveau token, même compte : seul le vault change.
+    out = set_registry(repo, "ghcr.io", "quiche-lorraine", "ghp_neuf", PASSWORD)
+    assert "remplacée" in out and "ajouté à swarm_registries" not in out
+    assert read_vault(repo / VARS_DIR / "vault.yml", PASSWORD) == {"vault_registry_ghcr_io": "ghp_neuf"}
+    set_registry(repo, "registry.example.fr:5000", "ci", "x", PASSWORD)
+    assert stacks(repo)["swarm_registries"]["registry.example.fr:5000"]["password"] == \
+        "{{ vault_registry_registry_example_fr_5000 }}"
+    assert lint.run(repo) == []
+
+
+def test_registre_refus(repo):
+    with pytest.raises(VaultError, match="nom d'hôte de registre invalide"):
+        set_registry(repo, "https://ghcr.io", "bot", "x", PASSWORD)
+    with pytest.raises(VaultError, match="username invalide"):
+        set_registry(repo, "ghcr.io", "-bot", "x", PASSWORD)
+    with pytest.raises(VaultError, match="valeur vide"):
+        set_registry(repo, "ghcr.io", "bot", "", PASSWORD)
+    set_registry(repo, "ghcr.io", "bot", "x", PASSWORD)
+    # Autre compte : on ne réécrit pas l'entrée existante, ni le vault.
+    with pytest.raises(VaultError, match="déjà dans swarm_registries"):
+        set_registry(repo, "ghcr.io", "autre", "y", PASSWORD)
+    assert read_vault(repo / VARS_DIR / "vault.yml", PASSWORD) == {"vault_registry_ghcr_io": "x"}
+
+
+def test_commande_registre(repo, tmp_path):
+    (tmp_path / "pass").write_text(PASSWORD + "\n")
+    res = subprocess.run(
+        [os.path.join(os.path.dirname(sys.executable), "infra-mcp"), "registry", "set", "ghcr.io", "bot",
+         "--repo", str(repo)],
+        input="ghp_s3cr3t\n", env={**os.environ, "ANSIBLE_VAULT_PASSWORD_FILE": str(tmp_path / "pass")},
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "s3cr3t" not in res.stdout + res.stderr
+    assert read_vault(repo / VARS_DIR / "vault.yml", PASSWORD) == {"vault_registry_ghcr_io": "ghp_s3cr3t"}
