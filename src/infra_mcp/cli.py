@@ -1,4 +1,4 @@
-"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | token create <read|write> <label> | token list | token revoke <id>"""
+"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | secret set <nom> | token create <read|write> <label> | token list | token revoke <id>"""
 
 import argparse
 import json
@@ -18,6 +18,13 @@ def main() -> None:
     sync_cmd.add_argument("ansible_dir", nargs="?", type=Path, help="défaut : INFRA_MCP_ANSIBLE_DIR")
     ci_cmd = sub.add_parser("cloud-init", help="user-data cloud-init pour une nouvelle machine de l'inventaire")
     ci_cmd.add_argument("host")
+
+    sec = sub.add_parser("secret", help="secrets du vault, depuis un clone du repo de config").add_subparsers(
+        dest="action", required=True
+    )
+    sec_set = sec.add_parser("set", help="ajoute ou remplace un secret (valeur saisie sans écho, ou lue sur stdin)")
+    sec_set.add_argument("name", help="nom du secret Docker, ex. playtrail_mailer_dsn")
+    sec_set.add_argument("--repo", type=Path, default=Path("."), help="racine du repo de config (défaut : dossier courant)")
 
     tok = sub.add_parser("token", help="gère les tokens d'accès").add_subparsers(
         dest="action", required=True
@@ -66,6 +73,13 @@ def main() -> None:
         if problems:
             sys.exit(f"{len(problems)} problème(s)")
         print("ok")
+    elif args.cmd == "secret":
+        from .vault import VaultError, set_secret
+
+        try:
+            print(set_secret(args.repo, args.name, _read_value(), _vault_password(args.repo)))
+        except VaultError as exc:
+            sys.exit(str(exc))
     elif args.action == "create":
         token = tokens.create(config.TOKENS_FILE, args.level, args.label)
         print(token)
@@ -76,6 +90,32 @@ def main() -> None:
         if not tokens.revoke(config.TOKENS_FILE, args.token_id):
             sys.exit(f"token inconnu : {args.token_id}")
         print("révoqué")
+
+
+def _read_value() -> str:
+    if not sys.stdin.isatty():
+        return sys.stdin.read().removesuffix("\n")
+    from getpass import getpass
+
+    value = getpass("Valeur (sans écho) : ")
+    if getpass("Encore une fois : ") != value:
+        sys.exit("les deux saisies diffèrent")
+    return value
+
+
+def _vault_password(repo: Path) -> str:
+    import os
+    from getpass import getpass
+
+    from .vault import VARS_DIR
+
+    if path := os.environ.get("ANSIBLE_VAULT_PASSWORD_FILE"):
+        return Path(path).expanduser().read_text().strip()
+    # getpass lit le terminal, même quand la valeur arrive par stdin.
+    password = getpass("Mot de passe vault : ")
+    if not (repo / VARS_DIR / "vault.yml").exists() and getpass("Nouveau vault, encore une fois : ") != password:
+        sys.exit("les deux saisies diffèrent")
+    return password
 
 
 if __name__ == "__main__":
