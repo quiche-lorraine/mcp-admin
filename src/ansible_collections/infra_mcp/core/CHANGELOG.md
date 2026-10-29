@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- `maintenance_health` (outil `health`) : passage de surveillance selon un
+  modèle par défaut (seuils disque et mémoire, fenêtre et expression des
+  lignes d'erreur, unités dont on lit le journal), surchargé par les variables
+  `monitoring_*` et par la clé `monitoring` d'une entrée de `swarm_stacks`.
+
 ## 0.7.0
 
 - `swarm_registries` : registres privés (ghcr.io…) d'où les stacks tirent leurs

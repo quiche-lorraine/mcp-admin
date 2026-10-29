@@ -56,6 +56,7 @@ l'accès :
 | `status` | `limit` | Par hôte : uptime, charge, mémoire, disque par point de montage, unités systemd en échec, mises à jour en attente (dont sécurité), redémarrage requis (`/run/reboot-required` et paquets concernés), état de Docker et du nœud swarm |
 | `logs` | `host`, `source`, `lines` (≤ 500), `since` (ex. `1h`), `grep` (optionnel) | Fin du journal d'une unité systemd (`unit:<nom>`, via `journalctl -u`) ou d'un service Docker (`docker:<stack>_<service>`, via `docker service logs`) |
 | `stack_status` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
+| `health` | `limit` | Les trois à la fois pour tout le parc, selon un modèle de surveillance surchargeable (README, « Surveillance »), avec la liste des alertes |
 
 Pour `logs`, les commandes sont fixes et les arguments passés en liste. `grep`
 est appliqué en Python sur le texte récupéré. Les jetons évidents (`imcp_…`,

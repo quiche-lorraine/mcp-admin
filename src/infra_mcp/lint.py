@@ -345,6 +345,33 @@ def _shared_networks(config: dict) -> list:
     return networks if isinstance(networks, list) else []
 
 
+_MONITORING_KEYS = {"logs": bool, "error_pattern": str, "ignore": list}
+
+
+def _monitoring_violations(conf, top=True) -> list[str]:
+    """Clé monitoring d'une entrée de swarm_stacks (voir maintenance_health.yml)."""
+    if conf is None:
+        return []
+    if not isinstance(conf, dict):
+        return ["dictionnaire attendu"]
+    allowed = {**_MONITORING_KEYS, **({"enabled": bool, "services": dict} if top else {})}
+    found = [f"clé inconnue {k!r} (possibles : {', '.join(sorted(allowed))})" for k in conf if k not in allowed]
+    for key, kind in allowed.items():
+        if key in conf and not isinstance(conf[key], kind):
+            found.append(f"{key} : {kind.__name__} attendu")
+    patterns = ([conf["error_pattern"]] if isinstance(conf.get("error_pattern"), str) else []) + \
+        (conf["ignore"] if isinstance(conf.get("ignore"), list) else [])
+    for pattern in patterns:
+        try:
+            re.compile(str(pattern))
+        except re.error as exc:
+            found.append(f"expression invalide {pattern!r} : {exc}")
+    if top and isinstance(conf.get("services"), dict):
+        for name, svc in conf["services"].items():
+            found += [f"services.{name} : {v}" for v in _monitoring_violations(svc, top=False)]
+    return found
+
+
 def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     config = _stacks_config(ansible_dir)
     if not config:
@@ -368,6 +395,7 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     names = [s["name"] for s in config.get("swarm_stacks") or []]
     found += [f"stack {n} : dans swarm_stacks et swarm_stacks_absent" for n in set(names) & set(config.get("swarm_stacks_absent") or [])]
     for stack in config.get("swarm_stacks") or []:
+        found += [f"stack {stack['name']} : monitoring : {v}" for v in _monitoring_violations(stack.get("monitoring"))]
         compose_path = ansible_dir / "stacks" / stack["name"] / "compose.yml"
         if not compose_path.is_file():
             found.append(f"stack {stack['name']} : {compose_path} absent")
