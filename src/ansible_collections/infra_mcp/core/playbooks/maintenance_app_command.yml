@@ -1,0 +1,64 @@
+# Outils MCP app_query (token read) et app_command (token write) : une commande
+# déclarée dans le repo de config (clé commands d'une entrée de swarm_stacks),
+# lancée par docker exec dans un conteneur du service, sur le premier manager.
+#
+# Le serveur a déjà vérifié la déclaration et les paramètres, et construit argv.
+# Pas de shell : argv est passé en liste, borné par timeout. Avec
+# secret_output, la sortie n'apparaît ni dans le rapport ni dans les logs.
+#
+# argv arrive en JSON encodé base64 : Ansible évalue les balises Jinja d'une
+# extra var, jamais le résultat d'un filtre. Une valeur {{ … }} reste du texte.
+
+- name: Commande d'une application
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars:
+    _argv: "{{ maintenance_argv_b64 | b64decode | from_json }}"
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - maintenance_service is match('^[a-z0-9][a-z0-9_.-]*$')
+          - _argv is sequence and _argv is not string
+          - _argv | length > 0
+          - _argv | select('string') | list | length == _argv | length
+          - maintenance_timeout | int >= 1 and maintenance_timeout | int <= 600
+        quiet: true
+
+    - name: Conteneurs du service sur ce nœud
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - label=com.docker.swarm.service.name={{ maintenance_service }}
+          - --filter
+          - status=running
+      register: _containers
+      changed_when: false
+
+    - name: Un conteneur en cours
+      ansible.builtin.assert:
+        that: _containers.stdout_lines | length > 0
+        fail_msg: "aucun conteneur en cours pour {{ maintenance_service }} sur {{ inventory_hostname }}"
+        quiet: true
+
+    - name: Commande
+      ansible.builtin.command:
+        argv: "{{ ['timeout', maintenance_timeout | string, 'docker', 'exec', _containers.stdout_lines[0]] + _argv }}"
+      register: _exec
+      changed_when: false
+      failed_when: false
+      no_log: "{{ maintenance_secret_output | default(false) | bool }}"
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        _secret: "{{ maintenance_secret_output | default(false) | bool }}"
+        maintenance_report:
+          rc: "{{ _exec.rc | default(none) }}"
+          stdout: "{{ [] if _secret else _exec.stdout_lines | default([]) }}"
+          stderr: "{{ [] if _secret else _exec.stderr_lines | default([]) }}"

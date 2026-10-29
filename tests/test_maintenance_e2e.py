@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastmcp.exceptions import ToolError
 
 from infra_mcp import config, runner, server
 from test_stacks_e2e import _swarm_active, docker
@@ -52,13 +53,21 @@ def infra(tmp_path_factory):
     }
     if python := _apt_python():
         hosts["sys"] = {"ansible_connection": "local", "ansible_python_interpreter": python}
-    (root / "inventory" / "group_vars").mkdir(parents=True)
+    (root / "inventory" / "group_vars" / "swarm_managers").mkdir(parents=True)
     # Modèle de surveillance surchargé pour health : la stack de test n'écrit pas
-    # d'erreur, on lui fait compter sa ligne de démarrage.
-    (root / "inventory" / "group_vars" / "swarm_managers.yml").write_text(yaml.safe_dump({
+    # d'erreur, on lui fait compter sa ligne de démarrage. Commandes déclarées pour
+    # app_query et app_command (l'image whoami ne contient que son binaire).
+    (root / "inventory" / "group_vars" / "swarm_managers" / "stacks.yml").write_text(yaml.safe_dump({
         "monitoring_units_e2e": ["docker.service"],
         "swarm_stacks": [{"name": STACK, "monitoring": {
-            "error_pattern": "Starting up", "services": {"autre": {"logs": False}}}}],
+            "error_pattern": "Starting up", "services": {"autre": {"logs": False}}},
+            "commands": {
+                "usage": {"service": "web", "argv": ["/whoami", "-h"], "level": "read"},
+                "usage-secret": {"service": "web", "argv": ["/whoami", "-h"], "level": "read",
+                                 "secret_output": True},
+                "serve": {"service": "web", "argv": ["/whoami", "-port={port}"],
+                          "params": {"port": "[0-9]{4,5}"}, "timeout": 2},
+            }}],
     }))
     (root / "inventory" / "hosts.yml").write_text(yaml.safe_dump({"all": {
         "hosts": {k: v for k, v in hosts.items() if k != "mgr"},
@@ -104,6 +113,40 @@ def test_health(infra):
     assert web["logs"]["count"] >= 1 and "Starting up on port 80" in web["logs"]["last"][-1], r
     assert f"stack {STACK} : {web['logs']['count']} ligne(s) d'erreur depuis 24h dans les logs de {STACK}_web" in r["alerts"]
     assert r["hosts"]["mgr"]["load"] and r["ok"] is False
+
+
+def test_commandes_d_application(infra):
+    r = call("app_query", stack=STACK, command="usage")
+    assert "Usage" in r["output"] and r["rc"] is not None, r
+    r = call("app_query", stack=STACK, command="usage-secret")
+    assert "Usage" not in r["output"] and "masquée" in r["output"], r
+    # Commande d'écriture : refusée en lecture ; le délai coupe un serveur qui ne
+    # rend pas la main.
+    with pytest.raises(ToolError, match="app_command"):
+        call("app_query", stack=STACK, command="serve", params={"port": "8081"})
+    r = call("app_command", stack=STACK, command="serve", params={"port": "8081"})
+    assert r["rc"] == 124 and "délai dépassé" in r["error"], r
+    with pytest.raises(ToolError, match="valeur refusée"):
+        call("app_command", stack=STACK, command="serve", params={"port": "80; id"})
+    with pytest.raises(ToolError, match="commande inconnue"):
+        call("app_command", stack=STACK, command="sh")
+
+
+def test_extra_vars_jamais_evaluees(infra, tmp_path):
+    """Seconde barrière, sans passer par build_argv : un argv qui arrive au playbook
+    avec une balise Jinja n'est pas évalué par Ansible (il le serait en clair)."""
+    import base64
+    import json
+
+    from infra_mcp import maintenance
+    marker = tmp_path / "evalue"
+    argv = ["/whoami", "-name={{ lookup('pipe', 'touch " + str(marker) + "') }}", "-h"]
+    hosts = asyncio.run(maintenance.run("app_command", {
+        "maintenance_service": f"{STACK}_web",
+        "maintenance_argv_b64": base64.b64encode(json.dumps(argv).encode()).decode(),
+        "maintenance_timeout": 10, "maintenance_secret_output": False}, write=True))
+    assert hosts["mgr"]["report"]["rc"] == 0, hosts
+    assert not marker.exists(), hosts
 
 
 def test_stack_restart(infra):

@@ -29,6 +29,8 @@ modèle générique, aussi utilisé par les tests.
 | `logs`           | read   | Fin des logs d'une unité systemd ou d'un service Docker, secrets évidents masqués |
 | `stack_status`   | read   | Services d'une stack : répliques voulues et en cours, erreurs |
 | `health`         | read   | Passage de surveillance complet selon un modèle surchargeable, avec la liste des alertes |
+| `app_query`      | read   | Commande en lecture seule déclarée pour une application (`level: read`) |
+| `app_command`    | write  | Commande déclarée pour une application, qui peut la modifier |
 | `updates`        | write  | Mises à jour des paquets (`upgrade`, `security` ou `dist-upgrade`), sans redémarrage |
 | `reboot`         | write  | Redémarrage un hôte à la fois (drain si le swarm a plusieurs nœuds ; contrôleur différé d'une minute) |
 | `restart_service`| write  | Redémarre une unité systemd, jamais ssh                      |
@@ -308,6 +310,47 @@ swarm_stacks:
 ```
 
 Les expressions sont insensibles à la casse et vérifiées par le lint.
+
+## Commandes d'application (app_query, app_command)
+
+Pas de shell dans les conteneurs : seules les commandes déclarées dans le repo
+de config existent, sous la clé `commands` d'une entrée de `swarm_stacks`.
+
+```yaml
+swarm_stacks:
+  - name: app
+    commands:
+      create-user:                       # minuscules, chiffres, -
+        service: php                     # service du compose
+        argv: [php, bin/console, app:user:create, "{email}", "--organization={org}"]
+        params:                          # chaque paramètre : expression complète
+          email: '[^@\s]+@[^@\s]+'
+          org: '[\w .-]{1,64}'
+      jobs:
+        service: database
+        level: read                      # app_query (token read) ; défaut write
+        timeout: 30                      # secondes, 60 par défaut, 600 au plus
+        argv: [psql, -U, app, -c, "SELECT job_id, proc_name FROM timescaledb_information.jobs"]
+      reset-password:
+        service: php
+        secret_output: true              # sortie jamais renvoyée ni journalisée
+        argv: [php, bin/console, app:reset]
+```
+
+La commande tourne par `docker exec` dans un conteneur du service, sur le premier
+manager, avec ses arguments en liste. Le lint refuse :
+
+- un shell ou un lanceur en tête (`sh`, `bash`, `env`, `sudo`, `timeout`…) ;
+- un paramètre au milieu d'un texte (une requête SQL, un script) : il occupe un
+  argument entier ou la valeur d'une option (`--nom={p}`), et jamais juste après
+  `-c`, `-e`, `-r`, `-f` ;
+- un paramètre non déclaré ou inutilisé, un service absent du compose.
+
+À l'appel, chaque valeur doit correspondre entièrement à son expression et ne
+pas commencer par `-`. La sortie est masquée comme les logs, sauf
+`secret_output`, où elle n'est renvoyée nulle part. Au-delà du délai, l'outil
+rend la main ; le processus, lui, peut continuer dans le conteneur (Docker ne
+sait pas arrêter un `exec`).
 
 ## Installation sur le contrôleur
 

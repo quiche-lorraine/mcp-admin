@@ -38,7 +38,7 @@ async def test_token_read_ne_voit_pas_apply():
         async with connect(tokens.create(config.TOKENS_FILE, "read", "test")) as client:
             names = {t.name for t in await client.list_tools()}
             assert names == {"list_hosts", "host_vars", "list_playbooks", "repo_status", "plan",
-                             "status", "logs", "stack_status", "health"}
+                             "status", "logs", "stack_status", "health", "app_query"}
             assert (await client.call_tool("list_playbooks", {})).data == ["site", "stacks", "swarm-join"]
             with pytest.raises(ToolError):
                 await client.call_tool("apply", {"playbook": "site", "limit": "all"})
@@ -48,7 +48,8 @@ async def test_token_write_voit_apply():
     async with serve() as connect:
         async with connect(tokens.create(config.TOKENS_FILE, "write", "test")) as client:
             names = {t.name for t in await client.list_tools()}
-            assert {"apply", "updates", "reboot", "restart_service", "stack_restart", "docker_prune"} <= names
+            assert {"apply", "updates", "reboot", "restart_service", "stack_restart", "docker_prune",
+                    "app_command", "app_query"} <= names
             with pytest.raises(ToolError, match="playbook inconnu"):
                 await client.call_tool("apply", {"playbook": "inconnu", "limit": "all"})
 

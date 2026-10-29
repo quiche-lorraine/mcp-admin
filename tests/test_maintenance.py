@@ -167,7 +167,7 @@ def test_rapport_updates():
 def test_playbooks_du_socle():
     """Chaque outil a son playbook, qui finit par la tâche « Rapport » lue par le serveur,
     et le socle reste conforme aux règles de l'outil (pas de check_mode: false)."""
-    names = ["status", "journal", "service_logs", "stack_status", "health", "updates", "reboot",
+    names = ["status", "journal", "service_logs", "stack_status", "health", "app_command", "updates", "reboot",
              "restart_service", "stack_restart", "docker_prune"]
     for name in names:
         path = COLLECTION_DIR / "playbooks" / f"maintenance_{name}.yml"

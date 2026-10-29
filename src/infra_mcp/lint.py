@@ -345,6 +345,67 @@ def _shared_networks(config: dict) -> list:
     return networks if isinstance(networks, list) else []
 
 
+# --- Commandes d'application (outils app_query et app_command, voir appcmd.py) ---
+
+COMMAND_NAME_RE = re.compile(r"[a-z][a-z0-9-]*")
+PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+# Un paramètre occupe un argument entier ou la valeur d'une option (--nom={p}) :
+# jamais le milieu d'un texte (requête SQL, script) où il pourrait s'injecter.
+_OPTION_PLACEHOLDER_RE = re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*=\{[a-z][a-z0-9_]*\}")
+# Programmes qui exécutent ce qu'on leur passe : jamais en tête de commande.
+SHELLS = {"sh", "bash", "dash", "zsh", "ash", "ksh", "busybox", "env", "su", "sudo", "nsenter",
+          "xargs", "chroot", "nohup", "timeout"}
+# Options qui font lire du code ou un fichier à exécuter : jamais suivies d'un paramètre.
+CODE_FLAGS = {"-c", "-e", "-r", "-f", "--command", "--eval", "--file", "-x", "--execute"}
+_COMMAND_KEYS = {"service": str, "argv": list, "params": dict, "level": str,
+                 "secret_output": bool, "timeout": int}
+MAX_COMMAND_TIMEOUT = 600
+
+
+def command_violations(cmd, services) -> list[str]:
+    """Une commande déclarée sous commands d'une entrée de swarm_stacks."""
+    if not isinstance(cmd, dict):
+        return ["dictionnaire attendu"]
+    found = [f"clé inconnue {k!r} (possibles : {', '.join(sorted(_COMMAND_KEYS))})" for k in cmd if k not in _COMMAND_KEYS]
+    for key, kind in _COMMAND_KEYS.items():
+        if key in cmd and (not isinstance(cmd[key], kind) or (kind is int and isinstance(cmd[key], bool))):
+            found.append(f"{key} : {kind.__name__} attendu")
+    if found:
+        return found
+    if cmd.get("service") not in services:
+        found.append(f"service {cmd.get('service')!r} absent du compose (services : {', '.join(sorted(services))})")
+    if cmd.get("level", "write") not in ("read", "write"):
+        found.append("level : read ou write")
+    if not 1 <= cmd.get("timeout", 60) <= MAX_COMMAND_TIMEOUT:
+        found.append(f"timeout : entre 1 et {MAX_COMMAND_TIMEOUT} secondes")
+    argv, params = cmd.get("argv") or [], cmd.get("params") or {}
+    if not argv or not all(isinstance(a, str) and a for a in argv):
+        return found + ["argv : liste non vide de textes"]
+    if PLACEHOLDER_RE.search(argv[0]) or argv[0].rsplit("/", 1)[-1] in SHELLS:
+        found.append(f"argv : {argv[0]!r} ne peut pas lancer la commande (shell ou paramètre)")
+    used = set()
+    for i, arg in enumerate(argv):
+        names = PLACEHOLDER_RE.findall(arg)
+        used.update(names)
+        if not names:
+            continue
+        if not (PLACEHOLDER_RE.fullmatch(arg) or _OPTION_PLACEHOLDER_RE.fullmatch(arg)):
+            found.append(f"argv : {arg!r} : un paramètre occupe un argument entier ou la valeur d'une option (--nom={{p}})")
+        elif PLACEHOLDER_RE.fullmatch(arg) and argv[i - 1] in CODE_FLAGS:
+            found.append(f"argv : {arg!r} suit {argv[i - 1]} : un paramètre ne peut pas être du code à exécuter")
+    for name, pattern in params.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            found.append(f"params : nom invalide {name!r}")
+            continue
+        try:
+            re.compile(str(pattern))
+        except re.error as exc:
+            found.append(f"params.{name} : expression invalide : {exc}")
+    found += [f"argv : paramètre {n!r} absent de params" for n in sorted(used - set(params))]
+    found += [f"params : {n!r} n'apparaît pas dans argv" for n in sorted(set(params) - used)]
+    return found
+
+
 _MONITORING_KEYS = {"logs": bool, "error_pattern": str, "ignore": list}
 
 
@@ -400,7 +461,17 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
         if not compose_path.is_file():
             found.append(f"stack {stack['name']} : {compose_path} absent")
             continue
-        used = set((yaml.safe_load(compose_path.read_text()).get("secrets") or {}).keys())
+        compose = yaml.safe_load(compose_path.read_text()) or {}
+        commands = stack.get("commands") or {}
+        if not isinstance(commands, dict):
+            found.append(f"stack {stack['name']} : commands : dictionnaire nom → commande attendu")
+            commands = {}
+        for cname, cmd in commands.items():
+            if not isinstance(cname, str) or not COMMAND_NAME_RE.fullmatch(cname):
+                found.append(f"stack {stack['name']} : commande {cname!r} : nom invalide (minuscules, chiffres, -)")
+            found += [f"stack {stack['name']} : commande {cname} : {v}"
+                      for v in command_violations(cmd, set(compose.get("services") or {}))]
+        used = set((compose.get("secrets") or {}).keys())
         listed = set(stack.get("secrets") or [])
         if used - listed:
             found.append(f"stack {stack['name']} : secrets du compose absents de swarm_stacks : {sorted(used - listed)}")
