@@ -6,18 +6,30 @@ La maintenance courante (diagnostic, mises à jour, redémarrages, Docker) passe
 des opérations typées : voir maintenance.py et docs/maintenance.md.
 """
 
+import contextlib
 from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import require_scopes
 
-from . import appcmd, config, maintenance, runner
+from . import appcmd, autoupdate, config, maintenance, runner
 from .audit import AuditMiddleware
 from .tokens import FileTokenVerifier
 
 READ = {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}
 WRITE = {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}
+
+@contextlib.asynccontextmanager
+async def _lifespan(server):
+    """Tâches de fond du serveur : la mise à jour automatique des images."""
+    task = autoupdate.start()
+    try:
+        yield {}
+    finally:
+        if task is not None:
+            task.cancel()
+
 
 mcp = FastMCP(
     "infra",
@@ -31,6 +43,7 @@ mcp = FastMCP(
         "pour agir (dry_run d'abord)."
     ),
     auth=FileTokenVerifier(config.TOKENS_FILE),
+    lifespan=_lifespan,
 )
 mcp.add_middleware(AuditMiddleware(config.AUDIT_LOG))
 

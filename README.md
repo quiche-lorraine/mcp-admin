@@ -352,6 +352,44 @@ pas commencer par `-`. La sortie est masquée comme les logs, sauf
 rend la main ; le processus, lui, peut continuer dans le conteneur (Docker ne
 sait pas arrêter un `exec`).
 
+## Mise à jour automatique des images (auto_update)
+
+Pour une préproduction qui suit une branche : les services listés dans la clé
+`auto_update` d'une entrée de `swarm_stacks` suivent le tag de leur image, sans
+commit ni `apply`.
+
+```yaml
+swarm_stacks:
+  - name: app-preprod
+    auto_update: [php, worker]           # services du compose
+```
+
+```yaml
+# stacks/app-preprod/compose.yml
+services:
+  php:
+    image: ghcr.io/org/app:main          # tag mobile, publié par la CI
+    deploy:
+      update_config:
+        order: start-first
+        failure_action: rollback         # nouvelle version en échec : retour à l'ancienne
+```
+
+Le serveur fait un passage toutes les 10 minutes
+(`INFRA_MCP_AUTOUPDATE_INTERVAL`, en secondes, 0 pour couper), sauf pendant une
+autre action : le manager tire le tag (avec les identifiants de
+`swarm_registries`) et compare l'identifiant de l'image à celui noté sur le
+service (label `infra.autoupdate.image-id`). S'il a changé, le service est
+relancé et attend que ses nouvelles tâches tournent. Une image inchangée ne
+relance rien.
+
+Ce qui est mis à jour ou échoue est écrit dans le journal du service
+(`journalctl -u infra-mcp`, un échec contient `ERROR` et remonte dans `health`)
+et dans le journal d'audit (client `auto_update`). Un `apply` retire le label :
+le passage suivant relance ces services une fois. Le lint refuse un service
+absent du compose ou une image figée par digest. Pour une production, préfère un
+tag figé par version, changé par commit.
+
 ## Installation sur le contrôleur
 
 Une seule commande, sur le contrôleur (Debian ou Ubuntu), depuis une session

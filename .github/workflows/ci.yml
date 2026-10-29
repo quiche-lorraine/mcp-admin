@@ -56,7 +56,7 @@ jobs:
           python-version: "3.13"
       - run: pip install -e '.[dev]' docker jsondiff
       - run: docker swarm init --advertise-addr 127.0.0.1
-      - run: pytest -v tests/test_stacks_e2e.py tests/test_maintenance_e2e.py
+      - run: pytest -v tests/test_stacks_e2e.py tests/test_maintenance_e2e.py tests/test_autoupdate_e2e.py
 
   # Rôle crowdsec appliqué pour de vrai sur le runner : paquets du dépôt de
   # l'éditeur, bannissement dans nftables (tests/test_crowdsec_e2e.py).

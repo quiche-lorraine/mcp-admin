@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- `maintenance_stack_autoupdate` : les services listés dans la clé `auto_update`
+  d'une entrée de `swarm_stacks` suivent le tag de leur image. Lancé par le
+  serveur toutes les `INFRA_MCP_AUTOUPDATE_INTERVAL` secondes (10 minutes par
+  défaut) : le tag est tiré, le service relancé seulement si l'image a changé.
+
 ## 0.9.0
 
 - `maintenance_app_command` (outils `app_query` et `app_command`) : commandes

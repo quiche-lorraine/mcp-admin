@@ -21,3 +21,7 @@ MAX_PLANS = int(os.environ.get("INFRA_MCP_MAX_PLANS", "2"))
 SLOT_WAIT = int(os.environ.get("INFRA_MCP_SLOT_WAIT", "300"))
 MAX_INVENTORY = int(os.environ.get("INFRA_MCP_MAX_INVENTORY", "4"))
 MAX_OUTPUT = int(os.environ.get("INFRA_MCP_MAX_OUTPUT", "20000"))
+
+# Mise à jour automatique des images (clé auto_update de swarm_stacks, voir
+# autoupdate.py) : intervalle en secondes, 0 pour la couper.
+AUTOUPDATE_INTERVAL = int(os.environ.get("INFRA_MCP_AUTOUPDATE_INTERVAL", "600"))

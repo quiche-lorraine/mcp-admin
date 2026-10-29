@@ -83,6 +83,12 @@ répond tout de suite. `restart_service` sur `infra-mcp.service` ou
 `infra-mcp-update.service` fait de même : le redémarrage part quelques secondes
 après la réponse.
 
+**La mise à jour automatique des images** (clé `auto_update` de `swarm_stacks`,
+README) n'est pas un outil : le serveur lance lui-même
+`maintenance_stack_autoupdate` toutes les `INFRA_MCP_AUTOUPDATE_INTERVAL`
+secondes, avec le verrou d'`apply`. Elle n'agit que sur les services déclarés
+dans le repo de config.
+
 ## Ce qui ne change pas
 
 - Pas de commande libre, pas de tâche ad hoc, pas de lecture du vault.
