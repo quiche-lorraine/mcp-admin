@@ -433,6 +433,20 @@ def _monitoring_violations(conf, top=True) -> list[str]:
     return found
 
 
+def _auto_update_violations(services, compose_services: dict) -> list[str]:
+    """Clé auto_update d'une entrée de swarm_stacks (voir maintenance_stack_autoupdate.yml)."""
+    if services is None:
+        return []
+    if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
+        return ["liste de services attendue"]
+    found = [f"service {s!r} absent du compose" for s in services if s not in compose_services]
+    for s in services:
+        image = str((compose_services.get(s) or {}).get("image") or "")
+        if "@" in image:
+            found.append(f"service {s} : image figée par digest ({image}), elle ne suivrait aucun tag")
+    return found
+
+
 def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     config = _stacks_config(ansible_dir)
     if not config:
@@ -471,6 +485,8 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
                 found.append(f"stack {stack['name']} : commande {cname!r} : nom invalide (minuscules, chiffres, -)")
             found += [f"stack {stack['name']} : commande {cname} : {v}"
                       for v in command_violations(cmd, set(compose.get("services") or {}))]
+        found += [f"stack {stack['name']} : auto_update : {v}"
+                  for v in _auto_update_violations(stack.get("auto_update"), compose.get("services") or {})]
         used = set((compose.get("secrets") or {}).keys())
         listed = set(stack.get("secrets") or [])
         if used - listed:

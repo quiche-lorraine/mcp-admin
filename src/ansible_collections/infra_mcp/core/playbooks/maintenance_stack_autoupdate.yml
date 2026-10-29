@@ -1,0 +1,81 @@
+# Mise à jour automatique des images (infra_mcp.autoupdate, lancé par le serveur
+# toutes les INFRA_MCP_AUTOUPDATE_INTERVAL secondes) : les services listés dans
+# auto_update d'une entrée de swarm_stacks suivent le tag de leur image.
+#
+#   swarm_stacks:
+#     - name: playtrail-preprod
+#       auto_update: [php, worker]
+#
+# Le manager tire le tag (avec les identifiants de swarm_registries) et compare
+# l'identifiant de l'image à celui noté sur le service (label
+# infra.autoupdate.image-id). S'il diffère, le service est relancé (--force) : ses
+# nouvelles tâches tirent le tag. Docker ne garde pas de digest sur une image
+# mise à jour par docker service update, d'où le label. Un apply le retire : le
+# passage suivant relance ces services une fois.
+#
+# Le rollback en cas d'échec se règle dans le compose :
+# deploy.update_config.failure_action: rollback, avec un healthcheck dans l'image.
+
+- name: Mise à jour automatique des images
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars:
+    _services: "{{ swarm_stacks | default([]) | infra_mcp.core.autoupdate_services }}"
+  tasks:
+    - name: Services suivis
+      ansible.builtin.command:
+        argv: [docker, service, inspect, --format, "{{ '{{' }}json .Spec{{ '}}' }}", "{{ item }}"]
+      register: _inspect
+      changed_when: false
+      failed_when: false
+      loop: "{{ _services }}"
+
+    - name: Cibles
+      ansible.builtin.set_fact:
+        _targets: "{{ _inspect.results | default([]) | infra_mcp.core.autoupdate_targets }}"
+
+    - name: Dernière image de chaque tag
+      ansible.builtin.command:
+        argv: [docker, pull, --quiet, "{{ item }}"]
+      register: _pull
+      changed_when: false
+      failed_when: false
+      loop: "{{ _targets | map(attribute='image') | unique | list }}"
+
+    - name: Identifiant de l'image tirée
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ item.item }}"]
+      register: _ids
+      changed_when: false
+      failed_when: false
+      loop: "{{ _pull.results | default([]) | selectattr('rc', 'equalto', 0) | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # Sans --detach : la commande attend la fin du déploiement, et échoue si la
+    # nouvelle version ne démarre pas (rollback ou pause, selon update_config).
+    - name: Relance sur la nouvelle image
+      ansible.builtin.command:
+        argv: [docker, service, update, --quiet, --force, --with-registry-auth, --image, "{{ item.image }}",
+               --label-add, "infra.autoupdate.image-id={{ _new }}", "{{ item.service }}"]
+      vars:
+        _new: "{{ _ids.results | default([]) | selectattr('item.item', 'equalto', item.image)
+                  | map(attribute='stdout') | first | default('') }}"
+      register: _update
+      changed_when: true
+      failed_when: false
+      loop: "{{ _targets }}"
+      loop_control:
+        label: "{{ item.service }}"
+      when: _new | length > 0 and _new != item.deployed
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report: >-
+          {{ _inspect.results | default([])
+             | infra_mcp.core.autoupdate_report(_targets, _pull.results | default([]), _ids.results | default([]),
+                                                _update.results | default([]))
+             | combine({'simulation': ansible_check_mode}) }}
