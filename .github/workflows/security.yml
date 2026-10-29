@@ -51,7 +51,7 @@ jobs:
         run: |
           set -o pipefail
           docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
-            dir /repo --redact --no-banner --no-color 2>&1 | tee security-report/secrets.txt
+            dir /repo --redact --verbose --no-banner --no-color 2>&1 | tee security-report/secrets.txt
 
       - name: Verdict
         id: verdict
