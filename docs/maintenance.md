@@ -56,6 +56,7 @@ l'accès :
 | `status` | `limit` | Par hôte : uptime, charge, mémoire, disque par point de montage, unités systemd en échec, mises à jour en attente (dont sécurité), redémarrage requis (`/run/reboot-required` et paquets concernés), état de Docker et du nœud swarm |
 | `logs` | `host`, `source`, `lines` (≤ 500), `since` (ex. `1h`), `grep` (optionnel) | Fin du journal d'une unité systemd (`unit:<nom>`, via `journalctl -u`) ou d'un service Docker (`docker:<stack>_<service>`, via `docker service logs`) |
 | `stack_status` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
+| `app_query` | `stack`, `command`, `params` | Sortie d'une commande en lecture seule déclarée dans le repo de config (README, « Commandes d'application ») |
 | `health` | `limit` | Les trois à la fois pour tout le parc, selon un modèle de surveillance surchargeable (README, « Surveillance »), avec la liste des alertes |
 
 Pour `logs`, les commandes sont fixes et les arguments passés en liste. `grep`
@@ -72,6 +73,7 @@ dit à l'agent.
 | `reboot` | `limit`, `only_if_required` (défaut `true`), `dry_run` | Redémarre une machine à la fois et s'arrête au premier échec. Sur un swarm de plusieurs nœuds : drain du nœud, redémarrage, réactivation. Sur un swarm d'un seul nœud, pas de drain : il arrêterait toutes les stacks sans pouvoir les déplacer. |
 | `restart_service` | `host`, `service`, `dry_run` | `systemctl restart` de n'importe quelle unité existante, sauf `ssh` et `sshd`, puis vérification qu'elle est `active`. |
 | `stack_restart` | `stack`, `service` (optionnel), `dry_run` | `docker service update --force` sur les services de la stack, ou sur un seul, pour relancer leurs tâches sans changer la configuration. |
+| `app_command` | `stack`, `command`, `params` | Lance une commande déclarée pour l'application, sans dry_run (README, « Commandes d'application ») |
 | `docker_prune` | `limit`, `dry_run` | Supprime les conteneurs arrêtés, les images inutilisées et le cache de build. Jamais les volumes. |
 
 **Le contrôleur** est l'hôte joint en local (`ansible_host` à `127.0.0.1` ou

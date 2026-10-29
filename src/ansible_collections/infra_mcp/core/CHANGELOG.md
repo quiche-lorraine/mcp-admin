@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- `maintenance_app_command` (outils `app_query` et `app_command`) : commandes
+  déclarées par stack dans le repo de config (clé `commands` d'une entrée de
+  `swarm_stacks`), lancées par `docker exec` sans shell, paramètres validés,
+  délai borné, sortie masquée ou jamais renvoyée (`secret_output`).
+
 ## 0.8.0
 
 - `maintenance_health` (outil `health`) : passage de surveillance selon un
