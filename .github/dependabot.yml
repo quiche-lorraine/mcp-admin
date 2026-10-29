@@ -1,0 +1,16 @@
+# Security updates only: Dependabot opens a PR when an advisory affects a
+# dependency (requires "Dependabot alerts" and "Dependabot security updates"
+# in the repository settings). open-pull-requests-limit: 0 disables routine
+# version-bump PRs.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

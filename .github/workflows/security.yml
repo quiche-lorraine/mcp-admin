@@ -1,0 +1,85 @@
+name: Security
+
+# Recurring security watch: dependency advisories (lockfiles) and committed
+# secrets. Runs daily; a run with findings fails.
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  push:
+    branches: [main]
+    paths: [pyproject.toml, .github/workflows/security.yml]
+  pull_request:
+    paths: [pyproject.toml, .github/workflows/security.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-24.04
+    outputs:
+      findings: ${{ steps.verdict.outputs.findings }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - run: mkdir security-report
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: pip-audit
+        id: pip
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pip install --quiet pip-audit
+          pip-audit --progress-spinner off . 2>&1 | tee security-report/pip.txt
+
+      - name: Secret scan (gitleaks)
+        id: secrets
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+            dir /repo --redact --no-banner --no-color 2>&1 | tee security-report/secrets.txt
+
+      - name: Verdict
+        id: verdict
+        env:
+          OUTCOMES: ${{ steps.pip.outcome }} ${{ steps.secrets.outcome }}
+        run: |
+          {
+            echo "## Security audit"
+            for f in security-report/*.txt; do
+              echo "### $(basename "$f" .txt)"
+              echo '```'
+              tail -c 12000 "$f"
+              echo '```'
+            done
+          } > security-report/report.md
+          cat security-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          if echo "$OUTCOMES" | grep -q failure; then
+            echo "findings=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Security findings, see the job summary."
+            exit 1
+          fi
+          echo "findings=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report
+          path: security-report/report.md
+
+  # Public repository: no report issue, findings would be disclosed publicly.
+  # A failed scheduled run is notified by GitHub's Actions emails instead.
