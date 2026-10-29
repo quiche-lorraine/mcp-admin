@@ -95,7 +95,8 @@ def parse_json_output(stdout: str) -> dict:
             for host, result in task.get("hosts", {}).items():
                 entry = hosts.setdefault(host, {})
                 if name == "Rapport" and "maintenance_report" in result:
-                    entry["report"] = result["maintenance_report"]
+                    # Un playbook en plusieurs plays a un rapport par play : ils se complètent.
+                    entry["report"] = {**entry.get("report", {}), **result["maintenance_report"]}
                 elif result.get("unreachable"):
                     entry.setdefault("error", f"injoignable : {result.get('msg', '')}"[:500])
                 elif result.get("failed") and not result.get("ignore_errors"):
@@ -145,7 +146,7 @@ def redact_log(text: str) -> str:
     return text
 
 
-def summarize_status(report: dict) -> dict:
+def summarize_status(report: dict, disk_alert_pct: int = 85) -> dict:
     mem = report.get("memory_mb") or {}
     disks = []
     for m in report.get("mounts") or []:
@@ -154,7 +155,7 @@ def summarize_status(report: dict) -> dict:
             continue
         used = round(100 * (1 - avail / total))
         disks.append({"mount": m.get("mount"), "size_gb": round(total / 1e9, 1), "used_pct": used,
-                      **({"alert": True} if used >= 85 else {})})
+                      **({"alert": True} if used >= disk_alert_pct else {})})
     upgradable = [line for line in report.get("upgradable") or [] if "/" in line]
     docker = report.get("docker")
     swarm = (docker or {}).get("Swarm") or {}
@@ -232,3 +233,59 @@ def filter_log_lines(lines: list[str], grep: str | None) -> list[str]:
         needle = grep.lower()
         lines = [line for line in lines if needle in line.lower()]
     return [redact_log(line) for line in lines]
+
+
+def _redact_findings(findings: dict) -> dict:
+    return {name: {"count": f.get("count", 0), "last": [redact_log(line) for line in f.get("last") or []]}
+            for name, f in (findings or {}).items()}
+
+
+def summarize_health(status_hosts: dict, health_hosts: dict) -> dict:
+    """Rapports de status et de health -> état par hôte et par stack, et la liste des
+    alertes : ce qui demande une action ou un regard. ok quand elle est vide."""
+    alerts: list[str] = []
+    hosts: dict[str, dict] = {}
+    stacks: dict[str, dict] = {}
+    for host in sorted(set(status_hosts) | set(health_hosts)):
+        s, h = status_hosts.get(host, {}), health_hosts.get(host, {})
+        error = s.get("error") or h.get("error") or (None if "report" in s and "report" in h else "pas de rapport")
+        if error:
+            hosts[host] = {"error": error}
+            alerts.append(f"{host} : {error}")
+            continue
+        report = h["report"]
+        thresholds = report.get("thresholds") or {}
+        since = report.get("since", "24h")
+        state = summarize_status(s["report"], int(thresholds.get("disk_alert_pct", 85)))
+        for disk in state["disks"]:
+            if disk.get("alert"):
+                alerts.append(f"{host} : disque {disk['mount']} plein à {disk['used_pct']} %")
+        available = state["memory_mb"]["available"]
+        if available is not None and available < int(thresholds.get("memory_alert_mb", 150)):
+            alerts.append(f"{host} : {available} Mo de mémoire disponible")
+        if state["failed_units"]:
+            alerts.append(f"{host} : unités en échec : {', '.join(state['failed_units'])}")
+        if state["reboot_required"]:
+            alerts.append(f"{host} : redémarrage requis")
+        if state["updates"]["pending"]:
+            alerts.append(f"{host} : {state['updates']['pending']} mise(s) à jour en attente"
+                          f" (dont {state['updates']['security']} de sécurité)")
+        logs = _redact_findings(report.get("units"))
+        alerts += [f"{host} : {f['count']} ligne(s) d'erreur depuis {since} dans le journal de {unit}"
+                   for unit, f in logs.items() if f["count"]]
+        hosts[host] = {**state, "logs": logs}
+        service_logs = _redact_findings(report.get("services"))
+        for stack, tasks in (report.get("stacks") or {}).items():
+            services = summarize_stack(tasks or [])
+            if not services:
+                alerts.append(f"stack {stack} : aucun service déployé")
+            for name, svc in services.items():
+                if svc["running"] < svc["desired"]:
+                    alerts.append(f"stack {stack} : {name} à {svc['running']}/{svc['desired']} répliques")
+                if name in service_logs:
+                    svc["logs"] = service_logs[name]
+                    if svc["logs"]["count"]:
+                        alerts.append(f"stack {stack} : {svc['logs']['count']} ligne(s) d'erreur depuis "
+                                      f"{since} dans les logs de {name}")
+            stacks[stack] = services
+    return {"ok": not alerts, "alerts": alerts, "hosts": hosts, "stacks": stacks}

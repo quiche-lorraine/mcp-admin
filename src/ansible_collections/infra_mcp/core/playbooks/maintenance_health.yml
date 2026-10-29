@@ -1,0 +1,109 @@
+# Outil MCP health (token read) : un passage de surveillance, selon un modèle que
+# le repo de config peut surcharger. Le serveur y ajoute l'état de status et en
+# tire la liste des alertes.
+#
+# Modèle par défaut, surchargé comme le reste du socle (valeurs simples : l'hôte
+# gagne sur le groupe, qui gagne sur le global ; listes : chaque étage définit sa
+# variable *_global, *_<groupe>, *_host et elles s'additionnent) :
+#   monitoring_disk_alert_pct: 85     alerte au-delà de ce taux de remplissage
+#   monitoring_memory_alert_mb: 150   alerte sous cette mémoire disponible
+#   monitoring_logs_since: 24h        fenêtre de lecture des logs
+#   monitoring_error_pattern          expression d'une ligne d'erreur (casse ignorée)
+#   monitoring_units_*                unités systemd dont on lit le journal, en
+#                                     plus de celles d'infra-mcp (absentes : sautées)
+#   monitoring_ignore_*               expressions des lignes à ne pas compter
+#
+# Par stack, clé monitoring d'une entrée de swarm_stacks (tout est facultatif) :
+#   monitoring:
+#     enabled: false                  stack non surveillée
+#     logs: false                     répliques seulement, sans lire les logs
+#     error_pattern: "..."            remplace celle de l'hôte
+#     ignore: ["..."]                 s'ajoute à monitoring_ignore_*
+#     services:                       même chose service par service (nom sans
+#       worker: {logs: false}         le préfixe de la stack)
+
+- name: Surveillance des hôtes
+  hosts: all
+  become: true
+  gather_facts: false
+  vars: &monitoring
+    monitoring_units_base: [infra-mcp.service, infra-mcp-sync.service, infra-mcp-update.service]
+    _since: "{{ monitoring_logs_since | default('24h') }}"
+    _default_pattern: '\b(err|error|crit|critical|fatal|panic|exception|traceback)\b'
+    _pattern: "{{ monitoring_error_pattern | default(_default_pattern) }}"
+    _ignore: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^monitoring_ignore_')) | flatten | unique }}"
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - _since is match('^[0-9]+[smhd]$')
+          - monitoring_disk_alert_pct | default(85) | int > 0
+          - monitoring_memory_alert_mb | default(150) | int >= 0
+        quiet: true
+
+    - name: Journaux
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit={{ item }}
+          - --since=-{{ _since }}
+          - --lines=10000
+          - --quiet
+          - --no-pager
+          - --output=short-iso
+      loop: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^monitoring_units_')) | flatten | unique }}"
+      register: _journals
+      changed_when: false
+      failed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          thresholds:
+            disk_alert_pct: "{{ monitoring_disk_alert_pct | default(85) | int }}"
+            memory_alert_mb: "{{ monitoring_memory_alert_mb | default(150) | int }}"
+          since: "{{ _since }}"
+          units: "{{ _journals.results | infra_mcp.core.monitoring_findings(_pattern, _ignore) }}"
+
+- name: Surveillance des stacks
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars: *monitoring
+  tasks:
+    - name: Tâches des stacks
+      community.docker.docker_stack_task_info:
+        name: "{{ item.name }}"
+      loop: "{{ swarm_stacks | default([]) | infra_mcp.core.monitoring_stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _stacks
+
+    - name: Logs des services
+      ansible.builtin.command:
+        argv:
+          - docker
+          - service
+          - logs
+          - --since={{ (_since[:-1] | int * 24) ~ 'h' if _since.endswith('d') else _since }}
+          - --tail=10000
+          - --timestamps
+          - --no-trunc
+          - --no-task-ids
+          - "{{ item.name }}"
+      loop: "{{ _stacks.results | infra_mcp.core.monitoring_services(_pattern, _ignore) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _service_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          stacks: "{{ dict(_stacks.results | map(attribute='item.name') | zip(_stacks.results | map(attribute='results'))) }}"
+          services: "{{ _service_logs.results | infra_mcp.core.monitoring_findings(_pattern, _ignore) }}"

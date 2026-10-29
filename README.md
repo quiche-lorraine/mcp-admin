@@ -28,6 +28,7 @@ modèle générique, aussi utilisé par les tests.
 | `status`         | read   | État des hôtes : charge, disques, unités en échec, mises à jour en attente, redémarrage requis, Docker |
 | `logs`           | read   | Fin des logs d'une unité systemd ou d'un service Docker, secrets évidents masqués |
 | `stack_status`   | read   | Services d'une stack : répliques voulues et en cours, erreurs |
+| `health`         | read   | Passage de surveillance complet selon un modèle surchargeable, avec la liste des alertes |
 | `updates`        | write  | Mises à jour des paquets (`upgrade`, `security` ou `dist-upgrade`), sans redémarrage |
 | `reboot`         | write  | Redémarrage un hôte à la fois (drain si le swarm a plusieurs nœuds ; contrôleur différé d'une minute) |
 | `restart_service`| write  | Redémarre une unité systemd, jamais ssh                      |
@@ -266,6 +267,47 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   Ce sont les seuls réseaux `external` acceptés, sans `name:`. Retirer un réseau
   de la liste ne le supprime pas. Un réseau du même nom créé sans chiffrement est
   recréé chiffré, ce qui échoue tant qu'un service l'utilise.
+
+## Surveillance (outil health)
+
+`health` fait en un appel le passage de surveillance : `status` de chaque hôte,
+répliques de chaque stack de `swarm_stacks`, lignes d'erreur dans les logs de
+leurs services et dans le journal des unités surveillées. Il renvoie l'état
+détaillé et une liste `alerts` (`ok: true` quand elle est vide) : disque plein,
+mémoire basse, unité en échec, redémarrage requis, mises à jour en attente,
+service sans toutes ses répliques, lignes d'erreur.
+
+Le socle fournit un modèle par défaut, que le repo de config surcharge comme le
+reste (valeurs simples par étage, listes additionnées) :
+
+```yaml
+# group_vars/all.yml, un groupe ou un hôte
+monitoring_disk_alert_pct: 85     # alerte au-delà
+monitoring_memory_alert_mb: 150   # alerte sous cette mémoire disponible
+monitoring_logs_since: 24h        # fenêtre de lecture des logs
+monitoring_error_pattern: '\b(err|error|crit|critical|fatal|panic|exception|traceback)\b'
+monitoring_units_global: [crowdsec.service]   # journaux lus en plus de ceux d'infra-mcp
+monitoring_ignore_global: ['deprecated']      # lignes jamais comptées (expressions)
+```
+
+Et par stack, la clé `monitoring` d'une entrée de `swarm_stacks` (tout est
+facultatif ; un service surcharge sa stack, `ignore` s'additionne) :
+
+```yaml
+swarm_stacks:
+  - name: traefik
+    monitoring:
+      ignore: ['^\S+ \S+ - - \[']   # lignes du journal d'accès
+  - name: app
+    monitoring:
+      services:
+        worker: {error_pattern: 'CRITICAL|failed'}
+        redis: {logs: false}         # répliques seulement
+  - name: brouillon
+    monitoring: {enabled: false}
+```
+
+Les expressions sont insensibles à la casse et vérifiées par le lint.
 
 ## Installation sur le contrôleur
 

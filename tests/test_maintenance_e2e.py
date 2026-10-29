@@ -52,7 +52,14 @@ def infra(tmp_path_factory):
     }
     if python := _apt_python():
         hosts["sys"] = {"ansible_connection": "local", "ansible_python_interpreter": python}
-    (root / "inventory").mkdir()
+    (root / "inventory" / "group_vars").mkdir(parents=True)
+    # Modèle de surveillance surchargé pour health : la stack de test n'écrit pas
+    # d'erreur, on lui fait compter sa ligne de démarrage.
+    (root / "inventory" / "group_vars" / "swarm_managers.yml").write_text(yaml.safe_dump({
+        "monitoring_units_e2e": ["docker.service"],
+        "swarm_stacks": [{"name": STACK, "monitoring": {
+            "error_pattern": "Starting up", "services": {"autre": {"logs": False}}}}],
+    }))
     (root / "inventory" / "hosts.yml").write_text(yaml.safe_dump({"all": {
         "hosts": {k: v for k, v in hosts.items() if k != "mgr"},
         "children": {"swarm": {"children": {"swarm_managers": {"hosts": {"mgr": hosts["mgr"]}}}}},
@@ -87,6 +94,16 @@ def test_stack_status_et_logs(infra):
     # Docker ne connaît pas l'unité « jour » : le socle la convertit en heures.
     lines = call("logs", source=f"docker:{STACK}_web", lines=20, since="1d")["mgr"]["lines"]
     assert any("Starting up on port 80" in line for line in lines), lines
+
+
+def test_health(infra):
+    r = call("health", limit="mgr")
+    assert STACK in r["stacks"], r
+    web = r["stacks"][STACK][f"{STACK}_web"]
+    assert web["desired"] == 2 and web["running"] == 2, r
+    assert web["logs"]["count"] >= 1 and "Starting up on port 80" in web["logs"]["last"][-1], r
+    assert f"stack {STACK} : {web['logs']['count']} ligne(s) d'erreur depuis 24h dans les logs de {STACK}_web" in r["alerts"]
+    assert r["hosts"]["mgr"]["load"] and r["ok"] is False
 
 
 def test_stack_restart(infra):
