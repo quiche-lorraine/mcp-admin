@@ -100,10 +100,22 @@
       changed_when: false
       failed_when: false
 
+    # Sauvegardes (maintenance_backup.yml) : la dernière réussite de chaque stack
+    # qui a quelque chose à sauvegarder, au plus backup_max_age_hours (26) heures.
+    - name: État des sauvegardes
+      ansible.builtin.slurp:
+        src: /var/lib/infra-mcp/backup-status.json
+      register: _backup_status
+      failed_when: false
+
     - name: Rapport
       ansible.builtin.debug:
         var: maintenance_report
       vars:
         maintenance_report:
+          backup_alerts: "{{ (backup_repository | default('') | length > 0)
+                             | infra_mcp.core.backup_alerts(swarm_stacks | default([]) | infra_mcp.core.backup_expected,
+                                                            _backup_status.content | default('') | b64decode,
+                                                            backup_max_age_hours | default(26)) }}"
           stacks: "{{ dict(_stacks.results | map(attribute='item.name') | zip(_stacks.results | map(attribute='results'))) }}"
           services: "{{ _service_logs.results | infra_mcp.core.monitoring_findings(_pattern, _ignore) }}"

@@ -69,7 +69,12 @@ def infra(tmp_path_factory):
                           "params": {"port": "[0-9]{4,5}"}, "timeout": 2},
             },
             # Commande de version de chaque service, pour l'outil versions.
-            "versions": {"web": ["/whoami", "-h"], "muet": False}}],
+            "versions": {"web": ["/whoami", "-h"], "muet": False},
+            # Sauvegarde : un export (la sortie d'une commande du service) et un volume.
+            "backup": {"dumps": {"base": ["cat", "/etc/passwd"]}, "volumes": ["data"]}}],
+        # Dépôt restic local, créé à la première sauvegarde.
+        "backup_repository": str(root / "restic"),
+        "backup_credentials": {"password": "e2e"},
     }))
     (root / "inventory" / "hosts.yml").write_text(yaml.safe_dump({"all": {
         "hosts": {k: v for k, v in hosts.items() if k != "mgr"},
@@ -79,7 +84,10 @@ def infra(tmp_path_factory):
     compose.parent.mkdir(parents=True)
     compose.write_text(yaml.safe_dump({"services": {
         "web": {"image": "traefik/whoami:v1.10.3", "deploy": {"replicas": 2}},
-        "muet": {"image": "traefik/whoami:v1.10.3"}}}))
+        "muet": {"image": "traefik/whoami:v1.10.3", "volumes": ["data:/data"]},
+        # whoami ne contient que son binaire : l'export de la sauvegarde vient d'ici.
+        "base": {"image": "busybox:1.37.0", "command": ["sleep", "86400"]}},
+        "volumes": {"data": {}}}))
     docker("stack", "deploy", "--detach=false", "-c", str(compose), STACK)
     previous, config.ANSIBLE_DIR = config.ANSIBLE_DIR, root
     # L'inventaire de test joint le manager en local (ansible_connection), ce que le
@@ -149,6 +157,42 @@ def test_versions(infra):
         call("versions", stack="absente")
 
 
+def test_sauvegarde(infra):
+    r = call("backup_run", stack=STACK, check=True)
+    entry = r["stacks"][STACK]
+    assert entry["ok"] is True, r
+    assert set(entry["items"]) == {"dump:base", "volume:e2emaint_data"}, r
+    assert all(len(i["snapshot"]) == 8 for i in entry["items"].values()), r
+    assert r["forget"] == "ok" and r["check"] == "ok", r
+    listing = call("backups")
+    assert listing["configured"] is True and listing["error"] is None, listing
+    snaps = listing["snapshots"][STACK]
+    assert snaps["dump:base"]["count"] >= 1 and snaps["volume:e2emaint_data"]["count"] >= 1, listing
+    assert listing["status"]["stacks"][STACK]["ok"] is True, listing
+    assert not [a for a in call("health", limit="mgr")["alerts"] if "sauvegarde" in a]
+
+
+def test_sauvegarde_en_echec(infra):
+    """Un export qui échoue ne laisse pas d'instantané et met la stack en échec,
+    ce que health signale."""
+    import base64
+    import json
+
+    from infra_mcp import backup, maintenance
+    plan = backup.plan(STACK)
+    plan["dumps"][0]["argv"] = ["/absent"]
+    hosts = asyncio.run(maintenance.run("backup", {
+        "maintenance_plan_b64": base64.b64encode(json.dumps(plan).encode()).decode(),
+        "maintenance_check": False, "maintenance_timeout": 60}, write=True))
+    entry = hosts["mgr"]["report"]["stacks"][STACK]
+    assert entry["ok"] is False and "error" in entry["items"]["dump:base"], hosts
+    assert "snapshot" in entry["items"]["volume:e2emaint_data"], hosts
+    alerts = call("health", limit="mgr")["alerts"]
+    assert f"stack {STACK} : dernière sauvegarde en échec (dump:base)" in alerts, alerts
+    # Une sauvegarde réussie efface l'alerte.
+    assert call("backup_run", stack=STACK)["stacks"][STACK]["ok"] is True
+
+
 def test_extra_vars_jamais_evaluees(infra, tmp_path):
     """Seconde barrière, sans passer par build_argv : un argv qui arrive au playbook
     avec une balise Jinja n'est pas évalué par Ansible (il le serait en clair)."""
@@ -172,7 +216,7 @@ def test_stack_restart(infra):
 
     before = task_ids()
     dry = call("stack_restart", stack=STACK, dry_run=True)["mgr"]
-    assert dry == {"services": [f"{STACK}_muet", f"{STACK}_web"], "simulation": True}
+    assert dry == {"services": [f"{STACK}_base", f"{STACK}_muet", f"{STACK}_web"], "simulation": True}
     assert task_ids() == before
     assert call("stack_restart", stack=STACK, service="web")["mgr"]["simulation"] is False
     assert not task_ids() & before  # nouvelles tâches

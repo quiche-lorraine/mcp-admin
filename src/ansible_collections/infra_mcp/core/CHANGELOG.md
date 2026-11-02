@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+- `maintenance_backup` (outil `backup_run`, passage planifié chaque nuit) et
+  `maintenance_backup_list` (outil `backups`) : sauvegarde restic des stacks,
+  exports de services (`pg_dump`… sans fichier intermédiaire) et volumes,
+  conservation et `restic check`. `health` alerte sur une sauvegarde manquante,
+  trop vieille ou en échec.
+- Incompatible : la clé `backup` devient obligatoire pour chaque entrée de
+  `swarm_stacks` : chaque volume du compose copié ou écarté avec sa raison.
+
 ## 0.11.0
 
 - `maintenance_stack_versions` (outil `versions`) : ce qui tourne, service par

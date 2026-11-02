@@ -274,6 +274,7 @@ def summarize_health(status_hosts: dict, health_hosts: dict) -> dict:
         alerts += [f"{host} : {f['count']} ligne(s) d'erreur depuis {since} dans le journal de {unit}"
                    for unit, f in logs.items() if f["count"]]
         hosts[host] = {**state, "logs": logs}
+        alerts += report.get("backup_alerts") or []
         service_logs = _redact_findings(report.get("services"))
         for stack, tasks in (report.get("stacks") or {}).items():
             services = summarize_stack(tasks or [])

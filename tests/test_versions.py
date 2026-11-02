@@ -78,7 +78,8 @@ def repo(tmp_path, monkeypatch):
     path = root / "inventory" / "group_vars" / "swarm_managers" / "stacks.yml"
     data = yaml.safe_load(path.read_text())
     data["swarm_secrets"] = {"whoami_token": "x"}
-    data["swarm_stacks"] = [{"name": "whoami", "secrets": ["whoami_token"], "versions": {"web": ["/whoami", "-h"]}}]
+    data["swarm_stacks"] = [{"name": "whoami", "secrets": ["whoami_token"], "versions": {"web": ["/whoami", "-h"]},
+                            "backup": {}}]
     path.write_text(yaml.safe_dump(data))
     monkeypatch.setattr(config, "ANSIBLE_DIR", root)
 

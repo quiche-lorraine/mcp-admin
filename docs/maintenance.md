@@ -58,6 +58,7 @@ l'accès :
 | `stack_status` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
 | `app_query` | `stack`, `command`, `params` | Sortie d'une commande en lecture seule déclarée dans le repo de config (README, « Commandes d'application ») |
 | `versions` | `stack` (optionnel) | Par service : image du conteneur en cours (tag, identifiant, digest, labels OCI dont le commit), depuis quand il tourne, sortie de sa commande de version déclarée (README, « Ce qui tourne ») |
+| `backups` | — | Par stack : dernier instantané de chaque export et volume, nombre gardé, état des derniers passages et du dernier `restic check` (README, « Sauvegardes ») |
 | `health` | `limit` | Les trois à la fois pour tout le parc, selon un modèle de surveillance surchargeable (README, « Surveillance »), avec la liste des alertes |
 
 Pour `logs`, les commandes sont fixes et les arguments passés en liste. `grep`
@@ -75,6 +76,7 @@ dit à l'agent.
 | `restart_service` | `host`, `service`, `dry_run` | `systemctl restart` de n'importe quelle unité existante, sauf `ssh` et `sshd`, puis vérification qu'elle est `active`. |
 | `stack_restart` | `stack`, `service` (optionnel), `dry_run` | `docker service update --force` sur les services de la stack, ou sur un seul, pour relancer leurs tâches sans changer la configuration. |
 | `app_command` | `stack`, `command`, `params` | Lance une commande déclarée pour l'application, sans dry_run (README, « Commandes d'application ») |
+| `backup_run` | `stack` (optionnel), `check` (défaut `false`) | Sauvegarde restic des exports et volumes déclarés (clé `backup`), puis conservation (`forget --prune`) ; `check` lance aussi `restic check`. Le serveur en fait un passage chaque nuit (README, « Sauvegardes »). |
 | `docker_prune` | `limit`, `dry_run` | Supprime les conteneurs arrêtés, les images inutilisées et le cache de build. Jamais les volumes. |
 
 **Le contrôleur** est l'hôte joint en local (`ansible_host` à `127.0.0.1` ou
@@ -89,6 +91,12 @@ README) n'est pas un outil : le serveur lance lui-même
 `maintenance_stack_autoupdate` toutes les `INFRA_MCP_AUTOUPDATE_INTERVAL`
 secondes, avec le verrou d'`apply`. Elle n'agit que sur les services déclarés
 dans le repo de config.
+
+**La sauvegarde planifiée** (`INFRA_MCP_BACKUP_AT`, 03:00 par défaut) lance
+`maintenance_backup` chaque nuit avec `check`, sous le même verrou ; elle
+attend jusqu'à une heure qu'un `apply` se termine. Un échec est écrit dans le
+journal du service (`ERROR`, remonte dans `health`) et dans le journal d'audit
+(client `backup`).
 
 ## Ce qui ne change pas
 

@@ -25,3 +25,7 @@ MAX_OUTPUT = int(os.environ.get("INFRA_MCP_MAX_OUTPUT", "20000"))
 # Mise à jour automatique des images (clé auto_update de swarm_stacks, voir
 # autoupdate.py) : intervalle en secondes, 0 pour la couper.
 AUTOUPDATE_INTERVAL = int(os.environ.get("INFRA_MCP_AUTOUPDATE_INTERVAL", "600"))
+
+# Sauvegarde planifiée des stacks (clé backup de swarm_stacks, voir backup.py) :
+# heure locale du contrôleur (HH:MM), vide pour la couper.
+BACKUP_AT = os.environ.get("INFRA_MCP_BACKUP_AT", "03:00")

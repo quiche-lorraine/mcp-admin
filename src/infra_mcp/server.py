@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import require_scopes
 
-from . import appcmd, autoupdate, config, maintenance, runner
+from . import appcmd, autoupdate, backup, config, maintenance, runner
 from . import versions as versions_mod
 from .audit import AuditMiddleware
 from .tokens import FileTokenVerifier
@@ -23,12 +23,13 @@ WRITE = {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}
 
 @contextlib.asynccontextmanager
 async def _lifespan(server):
-    """Tâches de fond du serveur : la mise à jour automatique des images."""
-    task = autoupdate.start()
+    """Tâches de fond du serveur : la mise à jour automatique des images et la
+    sauvegarde planifiée des stacks."""
+    tasks = [t for t in (autoupdate.start(), backup.start()) if t is not None]
     try:
         yield {}
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
 
 
@@ -39,9 +40,10 @@ mcp = FastMCP(
         "propose un changement dans le repo (group_vars / host_vars) ; utilise plan pour "
         "en voir l'effet. apply n'exécute que des playbooks existants. Pour la maintenance "
         "courante : health pour un passage complet ; status, logs et stack_status pour "
-        "diagnostiquer ; versions pour savoir ce qui tourne ; app_query et app_command "
-        "pour les commandes déclarées des applications ; updates, reboot, restart_service, "
-        "stack_restart et docker_prune pour agir (dry_run d'abord)."
+        "diagnostiquer ; versions pour savoir ce qui tourne ; backups pour les sauvegardes ; "
+        "app_query et app_command pour les commandes déclarées des applications ; "
+        "updates, reboot, restart_service, stack_restart, docker_prune et backup_run "
+        "pour agir (dry_run d'abord quand il existe)."
     ),
     auth=FileTokenVerifier(config.TOKENS_FILE),
     lifespan=_lifespan,
@@ -175,6 +177,14 @@ async def versions(stack: str | None = None) -> dict:
     return await versions_mod.run(stack)
 
 
+@mcp.tool(annotations=READ, auth=require_scopes("read"))
+async def backups() -> dict:
+    """Sauvegardes des stacks : pour chaque stack, le dernier instantané de chaque dump
+    et volume (date, taille, nombre d'instantanés gardés), et l'état des derniers
+    passages (dernière réussite, erreurs, dernier restic check)."""
+    return await backup.snapshots()
+
+
 @mcp.tool(annotations=WRITE, auth=require_scopes("write"))
 async def app_command(stack: str, command: str, params: dict[str, str] | None = None) -> dict:
     """Lance une commande déclarée pour une stack dans le repo de config (clé commands
@@ -228,6 +238,15 @@ async def stack_restart(stack: str, service: str | None = None, dry_run: bool = 
                                                     "maintenance_service": service or ""},
                                   check=dry_run, write=True)
     return _by_host(hosts)
+
+
+@mcp.tool(annotations=WRITE, auth=require_scopes("write"))
+async def backup_run(stack: str | None = None, check: bool = False) -> dict:
+    """Sauvegarde maintenant une stack, ou toutes, selon la clé backup de swarm_stacks
+    (dumps et volumes), puis applique la conservation. check : vérifie aussi le dépôt
+    (restic check). La sauvegarde planifiée tourne déjà chaque nuit : utile avant une
+    opération risquée (migration, mise à jour)."""
+    return await backup.run(stack, check)
 
 
 @mcp.tool(annotations=WRITE, auth=require_scopes("write"))
