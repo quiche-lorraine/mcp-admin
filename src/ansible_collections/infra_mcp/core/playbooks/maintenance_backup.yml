@@ -1,0 +1,232 @@
+# Sauvegarde des stacks (outil backup_run et passage planifié du serveur, voir
+# infra_mcp/backup.py), sur le premier manager, avec restic.
+#
+# Ce qui est sauvegardé vient de la clé backup de chaque entrée de swarm_stacks
+# (obligatoire, vérifiée par le lint) ; le serveur en a tiré la liste :
+#   dumps     sortie d'une commande du service (pg_dump…), passée à restic sans
+#             fichier intermédiaire (--stdin-from-command, docker exec sans shell)
+#   volumes   volumes Docker copiés tels quels
+#
+# Où, dans les variables du repo de config (group_vars des managers) :
+#   backup_repository: s3:https://s3.<région>.io.cloud.ovh.net/<bucket>
+#   backup_credentials:                  vault_* autorisé ici seulement
+#     password: "{{ vault_backup_password }}"         mot de passe du dépôt restic
+#     s3_access_key: "{{ vault_backup_s3_access_key }}"
+#     s3_secret_key: "{{ vault_backup_s3_secret_key }}"
+#   backup_keep: {daily: 7, weekly: 4, monthly: 6}   conservation (défaut)
+#   backup_check_subset: 5%              part des données relue par restic check
+#
+# restic vient de son image officielle, figée par digest (backup_restic_image) :
+# le binaire, statique, est copié sur le manager à la première sauvegarde puis à
+# chaque changement d'image. Le dépôt est créé s'il n'existe pas.
+#
+# Chaque passage met à jour /var/lib/infra-mcp/backup-status.json (dernière
+# tentative et dernière réussite par stack, dernier check) : health s'en sert.
+
+- name: Sauvegarde des stacks
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars:
+    _plan: "{{ maintenance_plan_b64 | b64decode | from_json }}"
+    _image: "{{ backup_restic_image | default('restic/restic:0.18.1@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76') }}"
+    _restic: /usr/local/lib/infra-mcp/restic
+    _state_dir: /var/lib/infra-mcp
+    _keep: "{{ {'daily': 7, 'weekly': 4, 'monthly': 6} | combine(backup_keep | default({})) }}"
+    _timeout: "{{ maintenance_timeout | default(3600) }}"
+  environment:
+    RESTIC_REPOSITORY: "{{ backup_repository | default('') }}"
+    RESTIC_PASSWORD: "{{ backup_credentials.password | default('') }}"
+    AWS_ACCESS_KEY_ID: "{{ backup_credentials.s3_access_key | default('') }}"
+    AWS_SECRET_ACCESS_KEY: "{{ backup_credentials.s3_secret_key | default('') }}"
+    RESTIC_CACHE_DIR: /var/cache/infra-mcp/restic
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - _plan.dumps is sequence and _plan.volumes is sequence
+          - (_plan.dumps + _plan.volumes) | map(attribute='stack') | select('match', '^[a-z0-9][a-z0-9_.-]*$') | list
+            | length == (_plan.dumps + _plan.volumes) | length
+          - _keep.values() | map('int') | min >= 1
+          - _timeout | int >= 60 and _timeout | int <= 21600
+          - _image is match('^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$')
+        fail_msg: "paramètres invalides (backup_keep : entiers ≥ 1 ; backup_restic_image : image figée par digest)"
+        quiet: true
+
+    - name: Dépôt configuré
+      ansible.builtin.assert:
+        that:
+          - backup_repository is defined and backup_repository | length > 0
+          - backup_credentials.password | default('') | length > 0
+        fail_msg: "sauvegardes non configurées : backup_repository et backup_credentials.password (README, « Sauvegardes »)"
+        quiet: true
+
+    # --- restic -------------------------------------------------------------------
+
+    - name: Dossiers
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [/usr/local/lib/infra-mcp, "{{ _state_dir }}", /var/cache/infra-mcp/restic]
+
+    - name: Image de restic installée
+      ansible.builtin.slurp:
+        src: "{{ _restic }}.image"
+      register: _installed
+      failed_when: false
+
+    - name: Installation de restic
+      when: (_installed.content | default('') | b64decode | trim) != _image
+      block:
+        - name: Image de restic
+          ansible.builtin.command:
+            argv: [docker, pull, --quiet, "{{ _image }}"]
+          changed_when: true
+
+        - name: Conteneur temporaire
+          ansible.builtin.command:
+            argv: [docker, create, "{{ _image }}"]
+          register: _tmp
+          changed_when: true
+
+        - name: Copie du binaire
+          ansible.builtin.command:
+            argv: [docker, cp, "{{ _tmp.stdout }}:/usr/bin/restic", "{{ _restic }}"]
+          changed_when: true
+
+        - name: Suppression du conteneur temporaire
+          ansible.builtin.command:
+            argv: [docker, rm, "{{ _tmp.stdout }}"]
+          changed_when: true
+
+        - name: Droits du binaire
+          ansible.builtin.file:
+            path: "{{ _restic }}"
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Image notée
+          ansible.builtin.copy:
+            content: "{{ _image }}\n"
+            dest: "{{ _restic }}.image"
+            mode: "0600"
+
+    - name: Dépôt existant
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", cat, config]
+      register: _config
+      changed_when: false
+      failed_when: _config.rc not in [0, 10]
+
+    - name: Création du dépôt
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", init]
+      when: _config.rc == 10
+      changed_when: true
+
+    - name: Verrous abandonnés
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", unlock]
+      changed_when: false
+
+    # --- Sauvegarde ------------------------------------------------------------------
+
+    - name: Conteneur des services à exporter
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - label=com.docker.swarm.service.name={{ item.stack }}_{{ item.service }}
+          - --filter
+          - status=running
+      loop: "{{ _plan.dumps }}"
+      loop_control:
+        label: "{{ item.stack }}_{{ item.service }}"
+      register: _ps
+      changed_when: false
+
+    - name: Volumes
+      ansible.builtin.command:
+        argv: [docker, volume, inspect, "{{ item.volume }}"]
+      loop: "{{ _plan.volumes }}"
+      loop_control:
+        label: "{{ item.volume }}"
+      register: _volumes
+      changed_when: false
+      failed_when: false
+
+    - name: Plan
+      ansible.builtin.set_fact:
+        _items: "{{ _plan | infra_mcp.core.backup_items(_ps.results | default([]), _volumes.results | default([])) }}"
+
+    - name: Export des services
+      ansible.builtin.command:
+        argv: "{{ [_restic, 'backup', '--json', '--host', inventory_hostname, '--tag', item.stack, '--tag', 'dump:' ~ item.name,
+                   '--stdin-from-command', '--stdin-filename', item.filename, '--',
+                   'timeout', _timeout | string, 'docker', 'exec', item.container] + item.argv }}"
+      loop: "{{ _items | selectattr('kind', 'equalto', 'dump') | selectattr('container', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.filename }}"
+      register: _dumps
+      changed_when: _dumps.rc == 0
+      failed_when: false
+
+    - name: Copie des volumes
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", backup, --json, --host, "{{ inventory_hostname }}", --tag, "{{ item.stack }}",
+               --tag, "volume:{{ item.name }}", "{{ item.path }}"]
+      loop: "{{ _items | selectattr('kind', 'equalto', 'volume') | selectattr('path', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _copies
+      changed_when: _copies.rc == 0
+      failed_when: false
+
+    - name: Résultat
+      ansible.builtin.set_fact:
+        _report: "{{ _items | infra_mcp.core.backup_results(_dumps.results | default([]), _copies.results | default([])) }}"
+
+    # --- Conservation et vérification ---------------------------------------------
+
+    - name: Anciens instantanés
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", forget, --prune, --keep-daily, "{{ _keep.daily }}", --keep-weekly, "{{ _keep.weekly }}",
+               --keep-monthly, "{{ _keep.monthly }}"]
+      register: _forget
+      changed_when: true
+      failed_when: false
+
+    - name: Vérification du dépôt
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", check, "--read-data-subset={{ backup_check_subset | default('5%') }}"]
+      when: maintenance_check | default(false) | bool
+      register: _check
+      changed_when: false
+      failed_when: false
+
+    - name: État précédent
+      ansible.builtin.slurp:
+        src: "{{ _state_dir }}/backup-status.json"
+      register: _previous
+      failed_when: false
+
+    - name: État
+      ansible.builtin.copy:
+        content: "{{ _previous.content | default('') | b64decode
+                     | infra_mcp.core.backup_status(_report, now(utc=True).isoformat(timespec='seconds') ~ '+00:00',
+                                                    _check if _check is not skipped else none) | to_nice_json }}\n"
+        dest: "{{ _state_dir }}/backup-status.json"
+        mode: "0600"
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          stacks: "{{ _report }}"
+          forget: "{{ 'ok' if _forget.rc == 0 else (_forget.stderr | default('') | trim)[-500:] }}"
+          check: "{{ none if _check is skipped else ('ok' if _check.rc == 0 else (_check.stderr | default('') | trim)[-500:]) }}"

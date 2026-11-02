@@ -8,7 +8,7 @@ dans le repo de config, où on pourrait les retirer en même temps qu'on les enf
 - le repo de config n'apporte que des données : ni code, ni tâche sur le
   contrôleur, ni lecture de ses fichiers (voir data_only_violations) ;
 - secrets : fichiers vault nommés vault.yml, variables vault_* utilisées seulement
-  par swarm_secrets et les password de swarm_registries ;
+  par swarm_secrets, backup_credentials et les password de swarm_registries ;
 - pas de group_vars/x.yml à côté de group_vars/x/ (Ansible ignore alors le fichier) ;
 - stacks : politique de sécurité des compose et cohérence avec l'inventaire.
 """
@@ -130,10 +130,11 @@ def _data_violations(node, path_keys_ok=True):
 
 
 def _vault_refs(node, top=True):
-    """Références à vault_* ailleurs que dans swarm_secrets et les password de swarm_registries."""
+    """Références à vault_* ailleurs que dans swarm_secrets, backup_credentials et les
+    password de swarm_registries."""
     if isinstance(node, dict):
         for key, value in node.items():
-            if top and key == "swarm_secrets":
+            if top and key in ("swarm_secrets", "backup_credentials"):
                 continue
             if top and key == "swarm_registries" and isinstance(value, dict):
                 for reg in value.values():
@@ -178,7 +179,7 @@ def data_only_violations(config_dir: Path) -> list[str]:
         data = yaml.load(text, Loader=_Loader)
         found += [f"{rel} : {v}" for v in _data_violations(data)]
         if ".github" not in rel.parts:
-            found += [f"{rel} : {v!r} : vault_* n'est utilisable que dans swarm_secrets et swarm_registries (sinon il apparaît dans la sortie de plan)"
+            found += [f"{rel} : {v!r} : vault_* n'est utilisable que dans swarm_secrets, swarm_registries et backup_credentials (sinon il apparaît dans la sortie de plan)"
                       for v in _vault_refs(data)]
     cfg_path = config_dir / "ansible.cfg"
     if cfg_path.exists():
@@ -462,15 +463,54 @@ def _versions_violations(versions, compose_services: dict) -> list[str]:
     if missing := sorted(set(compose_services) - set(versions)):
         found.append(f"service(s) sans commande : {', '.join(missing)} (une commande, ou false)")
     for name, argv in versions.items():
-        if argv is False:
-            continue
-        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
-            found.append(f"{name} : liste non vide de textes, ou false")
-            continue
-        if argv[0].rsplit("/", 1)[-1] in SHELLS:
-            found.append(f"{name} : {argv[0]!r} ne peut pas lancer la commande (shell)")
-        if any(PLACEHOLDER_RE.search(a) or any(t in a for t in ("{{", "{%", "{#")) for a in argv):
-            found.append(f"{name} : pas de paramètre ni de balise Jinja dans une commande de version")
+        if argv is not False:
+            found += [f"{v}, ou false" if v.endswith("textes") else v for v in _argv_violations(name, argv)]
+    return found
+
+
+def _argv_violations(name, argv) -> list[str]:
+    """Commande fixe passée à docker exec (versions, dumps de backup)."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+        return [f"{name} : liste non vide de textes"]
+    found = []
+    if argv[0].rsplit("/", 1)[-1] in SHELLS:
+        found.append(f"{name} : {argv[0]!r} ne peut pas lancer la commande (shell)")
+    if any(PLACEHOLDER_RE.search(a) or any(t in a for t in ("{{", "{%", "{#")) for a in argv):
+        found.append(f"{name} : pas de paramètre ni de balise Jinja dans la commande")
+    return found
+
+
+BACKUP_EXAMPLE = "backup: {dumps: {db: [pg_dump, -U, app, -Fc]}, volumes: [files], exclude: {db_data: dump}}"
+_BACKUP_KEYS = {"dumps": dict, "volumes": list, "exclude": dict}
+
+
+def _backup_violations(backup, compose: dict) -> list[str]:
+    """Clé backup d'une entrée de swarm_stacks (voir backup.py) : obligatoire. Chaque
+    volume du compose est copié (volumes) ou écarté avec sa raison (exclude) ; dumps
+    exporte un service par une commande (pg_dump…)."""
+    if backup is None:
+        return [f"obligatoire : chaque volume du compose copié ou écarté, {{}} s'il n'y en a pas ({BACKUP_EXAMPLE})"]
+    if not isinstance(backup, dict):
+        return [f"dictionnaire attendu ({BACKUP_EXAMPLE})"]
+    found = [f"clé inconnue {k!r} (possibles : {', '.join(sorted(_BACKUP_KEYS))})" for k in backup if k not in _BACKUP_KEYS]
+    for key, kind in _BACKUP_KEYS.items():
+        if key in backup and not isinstance(backup[key], kind):
+            found.append(f"{key} : {kind.__name__} attendu")
+    if found:
+        return found
+    services = compose.get("services") or {}
+    volumes = set((compose.get("volumes") or {}).keys())
+    copied, excluded = backup.get("volumes") or [], backup.get("exclude") or {}
+    for name, argv in (backup.get("dumps") or {}).items():
+        if name not in services:
+            found.append(f"dumps : service {name!r} absent du compose")
+        found += [f"dumps : {v}" for v in _argv_violations(name, argv)]
+    found += [f"volumes : {v!r} absent des volumes du compose" for v in copied if v not in volumes]
+    found += [f"exclude : {v!r} absent des volumes du compose" for v in excluded if v not in volumes]
+    found += [f"exclude : {v} : raison attendue (texte)" for v, why in excluded.items() if not isinstance(why, str) or not why.strip()]
+    found += [f"volume {v} : à la fois copié et écarté" for v in sorted(set(copied) & set(excluded))]
+    if missing := sorted(volumes - set(copied) - set(excluded)):
+        found.append(f"volume(s) ni copiés ni écartés : {', '.join(missing)}")
     return found
 
 
@@ -516,6 +556,7 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
                   for v in _auto_update_violations(stack.get("auto_update"), compose.get("services") or {})]
         found += [f"stack {stack['name']} : versions : {v}"
                   for v in _versions_violations(stack.get("versions"), compose.get("services") or {})]
+        found += [f"stack {stack['name']} : backup : {v}" for v in _backup_violations(stack.get("backup"), compose)]
         used = set((compose.get("secrets") or {}).keys())
         listed = set(stack.get("secrets") or [])
         if used - listed:

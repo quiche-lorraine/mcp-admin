@@ -1,0 +1,42 @@
+# Outil MCP backups (token read) : instantanés du dépôt restic, par stack et par
+# élément (dump ou volume), et état des derniers passages
+# (/var/lib/infra-mcp/backup-status.json). Configuration : maintenance_backup.yml.
+
+- name: Sauvegardes
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars:
+    _restic: /usr/local/lib/infra-mcp/restic
+    _configured: "{{ backup_repository | default('') | length > 0 }}"
+  environment:
+    RESTIC_REPOSITORY: "{{ backup_repository | default('') }}"
+    RESTIC_PASSWORD: "{{ backup_credentials.password | default('') }}"
+    AWS_ACCESS_KEY_ID: "{{ backup_credentials.s3_access_key | default('') }}"
+    AWS_SECRET_ACCESS_KEY: "{{ backup_credentials.s3_secret_key | default('') }}"
+    RESTIC_CACHE_DIR: /var/cache/infra-mcp/restic
+  tasks:
+    - name: Instantanés
+      ansible.builtin.command:
+        argv: ["{{ _restic }}", snapshots, --json, --no-lock]
+      register: _snapshots
+      changed_when: false
+      failed_when: false
+      when: _configured
+
+    - name: État des passages
+      ansible.builtin.slurp:
+        src: /var/lib/infra-mcp/backup-status.json
+      register: _status
+      failed_when: false
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report:
+          configured: "{{ _configured }}"
+          repository: "{{ backup_repository | default(none) }}"
+          snapshots: "{{ _snapshots.stdout | default('') | infra_mcp.core.backup_snapshots if _snapshots.rc | default(1) == 0 else {} }}"
+          error: "{{ none if not _configured or _snapshots.rc | default(1) == 0 else (_snapshots.stderr | default('') | trim)[-500:] }}"
+          status: "{{ _status.content | default('') | b64decode | from_json if _status.content is defined else {} }}"

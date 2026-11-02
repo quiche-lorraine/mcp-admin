@@ -20,7 +20,7 @@ from . import config, lint, version
 _NAME = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
 _LIMIT_RE = re.compile(rf"^{_NAME}(,{_NAME})*$")
 _PLAYBOOK_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
-_SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault)", re.I)
+_SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|private|vault|access_key)", re.I)
 
 _apply_lock = asyncio.Lock()
 # Partagées par toutes les lectures qui lancent ansible-playbook : plan, status,

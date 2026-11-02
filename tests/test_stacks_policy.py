@@ -56,7 +56,8 @@ def test_secret_genere_accepte(tmp_path):
     (tmp_path / "stacks" / "app" / "compose.yml").write_text(yaml.safe_dump(
         {"services": {"web": {"image": "nginx:1.27.2"}}, "secrets": {"key": {"external": True}}}))
     (vars_dir / "stacks.yml").write_text(yaml.safe_dump({
-        "swarm_stacks": [{"name": "app", "secrets": ["key"], "versions": {"web": ["nginx", "-v"]}}],
+        "swarm_stacks": [{"name": "app", "secrets": ["key"], "versions": {"web": ["nginx", "-v"]},
+                          "backup": {}}],
         "swarm_secrets": {},
         "swarm_secrets_generated": ["key"],
     }))

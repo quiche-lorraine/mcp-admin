@@ -72,6 +72,7 @@ def repo(tmp_path, monkeypatch):
     data["swarm_secrets"] = {"whoami_token": "x"}
     data["swarm_stacks"][0]["commands"] = {"version": {"service": "web", "argv": ["/whoami", "-h"], "level": "read"}}
     data["swarm_stacks"][0]["versions"] = {"web": ["/whoami", "-h"]}
+    data["swarm_stacks"][0]["backup"] = {}
     path.write_text(yaml.safe_dump(data))
     monkeypatch.setattr(config, "ANSIBLE_DIR", root)
     return root

@@ -385,6 +385,68 @@ secondes au plus ; la sortie est masquée comme les logs. Pour que l'image dise
 de quel commit elle vient, la CI qui la construit pose les labels
 `org.opencontainers.image.revision` et `.source`.
 
+## Sauvegardes (outils backups, backup_run)
+
+Les stacks sont sauvegardées avec [restic](https://restic.net) dans un dépôt
+chiffré, en général un bucket S3 (OVH Object Storage) dans une autre région que
+le serveur. Le serveur fait un passage chaque nuit (`INFRA_MCP_BACKUP_AT`,
+`HH:MM` heure locale, `03:00` par défaut, vide pour couper), avec le verrou
+d'`apply` : sauvegarde, conservation, puis `restic check` sur une part des
+données.
+
+Ce qui est sauvegardé est **obligatoire** pour chaque entrée de `swarm_stacks`
+(clé `backup`) : chaque volume nommé du compose est copié (`volumes`) ou écarté
+avec sa raison (`exclude`). `dumps` exporte un service par une commande dont la
+sortie va directement dans restic, sans fichier intermédiaire : c'est la bonne
+façon de sauvegarder une base (copier son volume pendant qu'elle tourne donne
+une copie incohérente). `{}` pour une stack sans volume.
+
+```yaml
+swarm_stacks:
+  - name: app
+    backup:
+      dumps:
+        database: [pg_dump, -U, app, -d, app, -Fc]
+      volumes: [storage]                 # fichiers téléversés
+      exclude:
+        database_data: couvert par le dump
+        redis_data: sessions et cache, se reconstruisent
+```
+
+Le dépôt et ses accès, dans les group_vars des managers :
+
+```yaml
+backup_repository: s3:https://s3.<région>.io.cloud.ovh.net/<bucket>
+backup_credentials:                      # vault_* autorisé ici
+  password: "{{ vault_backup_password }}"           # chiffrement du dépôt
+  s3_access_key: "{{ vault_backup_s3_access_key }}"
+  s3_secret_key: "{{ vault_backup_s3_secret_key }}"
+backup_keep: {daily: 7, weekly: 4, monthly: 6}      # défaut
+backup_max_age_hours: 26                 # au-delà, health alerte (défaut)
+```
+
+**Le mot de passe du dépôt ne se récupère pas** : sans lui, les sauvegardes sont
+illisibles. Garde-le hors du serveur (gestionnaire de mots de passe), avec une
+seconde clé (`restic key add`).
+
+Les commandes d'export passent par `docker exec` dans un conteneur du service
+sur le premier manager, arguments en liste, sans shell, comme les commandes
+d'application. restic vient de son image officielle, figée par digest
+(`backup_restic_image`) ; le dépôt est créé à la première sauvegarde. Un export
+qui échoue ne laisse pas d'instantané.
+
+- `backups` (token `read`) : par stack, le dernier instantané de chaque export
+  et volume, et l'état des derniers passages ;
+- `backup_run` (token `write`) : sauvegarde tout de suite une stack ou toutes,
+  avant une opération risquée ; `check: true` vérifie aussi le dépôt ;
+- `health` alerte quand une stack n'a pas de sauvegarde réussie depuis
+  `backup_max_age_hours`, quand le dernier passage a échoué, quand le dernier
+  `restic check` a échoué, ou quand `backup_repository` n'est pas défini.
+
+Restaurer reste une opération à la main sur le serveur
+(`restic restore`, `restic dump <id> app/database.dump | pg_restore …`) :
+l'outil ne restaure rien.
+
 ## Mise à jour automatique des images (auto_update)
 
 Pour une préproduction qui suit une branche : les services listés dans la clé

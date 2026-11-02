@@ -12,3 +12,4 @@ os.environ["INFRA_MCP_ANSIBLE_DIR"] = str(ANSIBLE_DIR)
 os.environ["INFRA_MCP_TOKENS"] = str(_TMP / "tokens.json")
 os.environ["INFRA_MCP_AUDIT_LOG"] = str(_TMP / "audit.jsonl")
 os.environ["INFRA_MCP_AUTOUPDATE_INTERVAL"] = "0"
+os.environ["INFRA_MCP_BACKUP_AT"] = ""

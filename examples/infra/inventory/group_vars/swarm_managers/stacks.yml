@@ -5,6 +5,8 @@ swarm_stacks: []
 #    secrets: [whoami_token]   # secrets Docker que la stack utilise
 #    versions:                 # obligatoire : commande de version de chaque service
 #      web: [/whoami, -h]      # (false pour une image qui n'en a pas)
+#    backup: {}                # obligatoire : dumps, volumes copiés ou écartés
+#                              # (README, « Sauvegardes »)
 
 # Retirer une stack de swarm_stacks ne la supprime pas du swarm : liste-la ici.
 swarm_stacks_absent: []
