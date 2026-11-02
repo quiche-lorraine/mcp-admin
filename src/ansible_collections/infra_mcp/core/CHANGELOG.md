@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- `maintenance_stack_versions` (outil `versions`) : ce qui tourne, service par
+  service : image du conteneur en cours (tag, identifiant, digest, labels OCI),
+  depuis quand, et sortie de la commande de version déclarée.
+- Incompatible : la clé `versions` devient obligatoire pour chaque entrée de
+  `swarm_stacks`, avec une commande par service du compose ou `false`.
+
 ## 0.10.0
 
 - `maintenance_stack_autoupdate` : les services listés dans la clé `auto_update`

@@ -447,6 +447,33 @@ def _auto_update_violations(services, compose_services: dict) -> list[str]:
     return found
 
 
+VERSIONS_EXAMPLE = "versions: {web: [app, --version]}"
+
+
+def _versions_violations(versions, compose_services: dict) -> list[str]:
+    """Clé versions d'une entrée de swarm_stacks (voir versions.py) : obligatoire,
+    une commande par service du compose, ou false pour une image sans commande de
+    version (seule l'image est alors décrite)."""
+    if versions is None:
+        return [f"obligatoire : une commande par service du compose, ou false ({VERSIONS_EXAMPLE})"]
+    if not isinstance(versions, dict):
+        return [f"dictionnaire service → commande attendu ({VERSIONS_EXAMPLE})"]
+    found = [f"service {s!r} absent du compose" for s in versions if s not in compose_services]
+    if missing := sorted(set(compose_services) - set(versions)):
+        found.append(f"service(s) sans commande : {', '.join(missing)} (une commande, ou false)")
+    for name, argv in versions.items():
+        if argv is False:
+            continue
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+            found.append(f"{name} : liste non vide de textes, ou false")
+            continue
+        if argv[0].rsplit("/", 1)[-1] in SHELLS:
+            found.append(f"{name} : {argv[0]!r} ne peut pas lancer la commande (shell)")
+        if any(PLACEHOLDER_RE.search(a) or any(t in a for t in ("{{", "{%", "{#")) for a in argv):
+            found.append(f"{name} : pas de paramètre ni de balise Jinja dans une commande de version")
+    return found
+
+
 def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
     config = _stacks_config(ansible_dir)
     if not config:
@@ -487,6 +514,8 @@ def stacks_inventory_violations(ansible_dir: Path) -> list[str]:
                       for v in command_violations(cmd, set(compose.get("services") or {}))]
         found += [f"stack {stack['name']} : auto_update : {v}"
                   for v in _auto_update_violations(stack.get("auto_update"), compose.get("services") or {})]
+        found += [f"stack {stack['name']} : versions : {v}"
+                  for v in _versions_violations(stack.get("versions"), compose.get("services") or {})]
         used = set((compose.get("secrets") or {}).keys())
         listed = set(stack.get("secrets") or [])
         if used - listed:

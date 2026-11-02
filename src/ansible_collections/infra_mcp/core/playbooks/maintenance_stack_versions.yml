@@ -1,0 +1,81 @@
+# Outil MCP versions (token read) : ce qui tourne dans les stacks de swarm_stacks,
+# service par service, sur le premier manager. Le serveur a lu la liste des
+# services et leurs commandes de version (clé versions d'une entrée de
+# swarm_stacks, obligatoire, vérifiée par le lint).
+#
+# Pour chaque service : son conteneur en cours, l'image de ce conteneur (référence,
+# identifiant, digest, labels OCI) et la sortie de sa commande de version. Pas de
+# shell : la commande est passée en liste à docker exec, bornée par timeout.
+#
+# La liste arrive en JSON encodé base64 : Ansible évalue les balises Jinja d'une
+# extra var, jamais le résultat d'un filtre.
+
+- name: Versions des stacks
+  hosts: swarm_managers[0]
+  become: true
+  gather_facts: false
+  vars:
+    _services: "{{ maintenance_services_b64 | b64decode | from_json }}"
+  tasks:
+    - name: Paramètres valides
+      ansible.builtin.assert:
+        that:
+          - _services is sequence and _services is not string
+          - _services | map(attribute='service') | select('match', '^[a-z0-9][a-z0-9_.-]*$') | list | length == _services | length
+          - maintenance_timeout | int >= 1 and maintenance_timeout | int <= 60
+        quiet: true
+
+    - name: Conteneur en cours de chaque service
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - label=com.docker.swarm.service.name={{ item.service }}
+          - --filter
+          - status=running
+      register: _ps
+      changed_when: false
+      loop: "{{ _services }}"
+      loop_control:
+        label: "{{ item.service }}"
+
+    - name: Conteneurs
+      ansible.builtin.command:
+        argv: [docker, inspect, "{{ item }}"]
+      register: _inspect
+      changed_when: false
+      failed_when: false
+      loop: "{{ _ps.results | map(attribute='stdout_lines') | flatten | unique | list }}"
+
+    - name: Images des conteneurs
+      ansible.builtin.command:
+        argv: [docker, image, inspect, "{{ item }}"]
+      register: _images
+      changed_when: false
+      failed_when: false
+      loop: "{{ _inspect.results | selectattr('rc', 'equalto', 0) | map(attribute='stdout') | map('from_json')
+                | map('first') | map(attribute='Image') | unique | list }}"
+
+    - name: Commande de version
+      ansible.builtin.command:
+        argv: "{{ ['timeout', maintenance_timeout | string, 'docker', 'exec', _cid] + item.argv }}"
+      vars:
+        _cid: "{{ _ps.results | selectattr('item.service', 'equalto', item.service) | map(attribute='stdout_lines')
+                  | first | first | default('') }}"
+      register: _exec
+      changed_when: false
+      failed_when: false
+      loop: "{{ _services | selectattr('argv') | list }}"
+      loop_control:
+        label: "{{ item.service }}"
+      when: _cid | length > 0
+
+    - name: Rapport
+      ansible.builtin.debug:
+        var: maintenance_report
+      vars:
+        maintenance_report: >-
+          {{ _services | infra_mcp.core.versions_report(_ps.results, _inspect.results | default([]),
+                                                        _images.results | default([]), _exec.results | default([])) }}
