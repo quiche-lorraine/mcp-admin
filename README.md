@@ -352,6 +352,39 @@ pas commencer par `-`. La sortie est masquée comme les logs, sauf
 rend la main ; le processus, lui, peut continuer dans le conteneur (Docker ne
 sait pas arrêter un `exec`).
 
+## Ce qui tourne (outil versions)
+
+L'outil `versions` (token `read`) dit, service par service, ce qui tourne dans
+une stack de `swarm_stacks`, ou dans toutes :
+
+- l'image du conteneur en cours : référence (tag), identifiant, digest ;
+- ses labels OCI s'ils existent : `revision` (le commit), `version`, `source`,
+  `created` (date de build) ;
+- depuis quand le conteneur tourne ;
+- la sortie de la commande de version du service.
+
+Cette commande est **obligatoire** : la clé `versions` d'une entrée de
+`swarm_stacks` en donne une par service du compose, ou `false` pour une image
+qui n'en a pas (seule l'image est alors décrite). Le lint refuse une stack sans
+`versions`, un service oublié ou absent du compose.
+
+```yaml
+swarm_stacks:
+  - name: app
+    versions:
+      php: [php, -v]
+      worker: [php, -v]
+      database: [psql, --version]
+      redis: [redis-server, --version]
+      socket-proxy: false                # pas de commande de version dans l'image
+```
+
+Comme une commande d'application : `docker exec` dans un conteneur du service
+sur le premier manager, arguments en liste, sans shell ni paramètre, 15
+secondes au plus ; la sortie est masquée comme les logs. Pour que l'image dise
+de quel commit elle vient, la CI qui la construit pose les labels
+`org.opencontainers.image.revision` et `.source`.
+
 ## Mise à jour automatique des images (auto_update)
 
 Pour une préproduction qui suit une branche : les services listés dans la clé

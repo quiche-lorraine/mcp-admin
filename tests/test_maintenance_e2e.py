@@ -67,15 +67,19 @@ def infra(tmp_path_factory):
                                  "secret_output": True},
                 "serve": {"service": "web", "argv": ["/whoami", "-port={port}"],
                           "params": {"port": "[0-9]{4,5}"}, "timeout": 2},
-            }}],
+            },
+            # Commande de version de chaque service, pour l'outil versions.
+            "versions": {"web": ["/whoami", "-h"], "muet": False}}],
     }))
     (root / "inventory" / "hosts.yml").write_text(yaml.safe_dump({"all": {
         "hosts": {k: v for k, v in hosts.items() if k != "mgr"},
         "children": {"swarm": {"children": {"swarm_managers": {"hosts": {"mgr": hosts["mgr"]}}}}},
     }}))
-    compose = root / "compose.yml"
-    compose.write_text(yaml.safe_dump({"services": {"web": {
-        "image": "traefik/whoami:v1.10.3", "deploy": {"replicas": 2}}}}))
+    compose = root / "stacks" / STACK / "compose.yml"
+    compose.parent.mkdir(parents=True)
+    compose.write_text(yaml.safe_dump({"services": {
+        "web": {"image": "traefik/whoami:v1.10.3", "deploy": {"replicas": 2}},
+        "muet": {"image": "traefik/whoami:v1.10.3"}}}))
     docker("stack", "deploy", "--detach=false", "-c", str(compose), STACK)
     previous, config.ANSIBLE_DIR = config.ANSIBLE_DIR, root
     # L'inventaire de test joint le manager en local (ansible_connection), ce que le
@@ -132,6 +136,19 @@ def test_commandes_d_application(infra):
         call("app_command", stack=STACK, command="sh")
 
 
+def test_versions(infra):
+    r = call("versions", stack=STACK)
+    web, muet = r[f"{STACK}_web"], r[f"{STACK}_muet"]
+    assert web["image"] == "traefik/whoami:v1.10.3", r
+    assert web["image_id"].startswith("sha256:") and web["digest"].startswith("sha256:"), r
+    assert web["started"] and "Usage" in web["version"], r
+    # false : l'image seule est décrite.
+    assert muet["version"] is None and muet["image_id"] == web["image_id"], r
+    assert set(call("versions")) >= {f"{STACK}_web", f"{STACK}_muet"}
+    with pytest.raises(ToolError, match="stack inconnue"):
+        call("versions", stack="absente")
+
+
 def test_extra_vars_jamais_evaluees(infra, tmp_path):
     """Seconde barrière, sans passer par build_argv : un argv qui arrive au playbook
     avec une balise Jinja n'est pas évalué par Ansible (il le serait en clair)."""
@@ -155,7 +172,7 @@ def test_stack_restart(infra):
 
     before = task_ids()
     dry = call("stack_restart", stack=STACK, dry_run=True)["mgr"]
-    assert dry == {"services": [f"{STACK}_web"], "simulation": True}
+    assert dry == {"services": [f"{STACK}_muet", f"{STACK}_web"], "simulation": True}
     assert task_ids() == before
     assert call("stack_restart", stack=STACK, service="web")["mgr"]["simulation"] is False
     assert not task_ids() & before  # nouvelles tâches

@@ -57,6 +57,7 @@ l'accès :
 | `logs` | `host`, `source`, `lines` (≤ 500), `since` (ex. `1h`), `grep` (optionnel) | Fin du journal d'une unité systemd (`unit:<nom>`, via `journalctl -u`) ou d'un service Docker (`docker:<stack>_<service>`, via `docker service logs`) |
 | `stack_status` | `stack` | Services de la stack, répliques voulues et en cours, dernières tâches en échec avec leur erreur |
 | `app_query` | `stack`, `command`, `params` | Sortie d'une commande en lecture seule déclarée dans le repo de config (README, « Commandes d'application ») |
+| `versions` | `stack` (optionnel) | Par service : image du conteneur en cours (tag, identifiant, digest, labels OCI dont le commit), depuis quand il tourne, sortie de sa commande de version déclarée (README, « Ce qui tourne ») |
 | `health` | `limit` | Les trois à la fois pour tout le parc, selon un modèle de surveillance surchargeable (README, « Surveillance »), avec la liste des alertes |
 
 Pour `logs`, les commandes sont fixes et les arguments passés en liste. `grep`
