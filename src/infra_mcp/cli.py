@@ -1,4 +1,4 @@
-"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | secret set <nom> | registry set <registre> <username> | token create <read|write> <label> | token list | token revoke <id>"""
+"""infra-mcp serve | lint [dossier] | sync [dossier] | cloud-init <hôte> | vault | secret set <nom> | registry set <registre> <username> | token create <read|write> <label> | token list | token revoke <id>"""
 
 import argparse
 import json
@@ -18,6 +18,9 @@ def main() -> None:
     sync_cmd.add_argument("ansible_dir", nargs="?", type=Path, help="défaut : INFRA_MCP_ANSIBLE_DIR")
     ci_cmd = sub.add_parser("cloud-init", help="user-data cloud-init pour une nouvelle machine de l'inventaire")
     ci_cmd.add_argument("host")
+
+    vault_cmd = sub.add_parser("vault", help="session interactive : ajoute, génère ou supprime des secrets, commit sur une branche, push")
+    vault_cmd.add_argument("--repo", type=Path, default=Path("."), help="clone du repo de config (défaut : dossier courant)")
 
     sec = sub.add_parser("secret", help="secrets du vault, depuis un clone du repo de config").add_subparsers(
         dest="action", required=True
@@ -81,6 +84,10 @@ def main() -> None:
         if problems:
             sys.exit(f"{len(problems)} problème(s)")
         print("ok")
+    elif args.cmd == "vault":
+        from .vault_cli import main as vault_main
+
+        vault_main(args.repo)
     elif args.cmd == "secret":
         from .vault import VaultError, set_secret
 
