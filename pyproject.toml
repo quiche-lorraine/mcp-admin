@@ -8,6 +8,8 @@ dependencies = [
     # Paquet ansible complet : ansible-core 2.20+ et les collections dont dépend
     # le socle (community.general, community.docker, ansible.posix).
     "ansible>=13,<15",
+    # Interface plein écran de infra-mcp vault (rich, sa base, vient déjà avec fastmcp).
+    "textual>=8.2,<9",
 ]
 
 [project.optional-dependencies]

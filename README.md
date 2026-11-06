@@ -183,27 +183,34 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   version (`nom_v2`…) et redéploie les stacks concernées.
 
   Le plus simple, depuis un clone du repo de config sur ton poste :
-  `infra-mcp vault`, une session interactive.
+  `infra-mcp vault`, une interface plein écran dans le terminal.
   - **Avant de commencer**, la commande passe sur `main` à jour (`git pull --ff-only`).
-    Elle refuse de démarrer s'il reste des modifications non commitées.
-  - **Le mot de passe vault** est demandé une seule fois, et vérifié tout de suite.
-  - **Ensuite**, on enchaîne les opérations :
-    - secrets Docker (`swarm_secrets`) ;
-    - variables vault seules, comme celles de `backup_credentials` ;
-    - secrets générés sur le serveur (`swarm_secrets_generated`) ;
-    - tokens de registre ;
-    - configuration des sauvegardes : dépôt, mot de passe, accès S3, et
-      `backup.yml` s'il n'existe pas ;
-    - suppressions, refusées tant qu'une stack ou une variable s'en sert.
-  - **Une valeur générée** (lettres et chiffres, 32 par défaut) n'est jamais
-    affichée. Elle passe par le presse-papier (`wl-copy`, `xclip`, `xsel` ou
-    `pbcopy`) le temps de la ranger, puis le presse-papier est vidé.
-  - **Rien n'est écrit avant la fin**, et un Ctrl-C à tout moment n'écrit rien. À
-    la fin viennent un récapitulatif, puis l'écriture et `infra-mcp lint`. Le
-    lint ne bloque que sur ce que ces changements ajoutent ; s'il bloque, les
-    fichiers sont remis comme avant.
+    Elle refuse de démarrer s'il reste des modifications non commitées. Puis elle
+    demande le mot de passe vault, une seule fois, vérifié tout de suite.
+  - **Le tableau** montre ce que contient le repo (secrets Docker, variables vault,
+    secrets générés sur le serveur, registres, dépôt des sauvegardes) et ce qui est
+    prévu (ajouté, remplacé, supprimé). Les raccourcis, rappelés en bas de l'écran :
+
+    | Touche | Action |
+    |---|---|
+    | `a` | ajouter : secret Docker (`swarm_secrets`), variable vault seule, secret généré sur le serveur (`swarm_secrets_generated`), token de registre |
+    | `b` | sauvegardes : dépôt restic, mot de passe, accès S3, et `backup.yml` s'il n'existe pas |
+    | `r` | remplacer la valeur de la ligne sélectionnée |
+    | `s` | supprimer la ligne, refusé tant qu'une stack, une variable ou une image s'en sert |
+    | `u` | annuler ce qui est prévu sur la ligne |
+    | `w` | écrire, vérifier, committer |
+    | `q` | quitter sans rien écrire |
+  - **Une valeur** est saisie deux fois sans écho, ou générée (bouton « Générer » :
+    32 lettres et chiffres). Une valeur générée n'est jamais affichée : elle passe
+    par le presse-papier (`wl-copy`, `xclip`, `xsel` ou `pbcopy`) le temps de la
+    ranger, puis le presse-papier est vidé.
+  - **Rien n'est écrit avant `w`**. Viennent alors un récapitulatif, l'écriture et
+    `infra-mcp lint`. Le lint ne bloque que sur ce que ces changements ajoutent ;
+    s'il bloque, les fichiers sont remis comme avant et le plan reste affiché, à
+    corriger.
   - **Enfin**, la commande committe sur une branche `vault/<date>`, sans aucune
-    valeur dans le message, pousse la branche et affiche le lien pour ouvrir la PR.
+    valeur dans le message. L'interface fermée, elle pousse la branche (git peut
+    demander ses identifiants) et affiche le lien pour ouvrir la PR.
   - **Après la suppression d'un secret Docker**, le swarm le garde :
     `docker secret rm` sur un manager.
 
