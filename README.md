@@ -182,8 +182,32 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   la stack les liste dans `secrets`. Changer une valeur crée une nouvelle
   version (`nom_v2`…) et redéploie les stacks concernées.
 
-  Pour ajouter ou remplacer un secret, depuis la racine d'un clone du repo de
-  config, sur ton poste :
+  Le plus simple, depuis un clone du repo de config sur ton poste :
+  `infra-mcp vault`, une session interactive.
+  - **Avant de commencer**, la commande passe sur `main` à jour (`git pull --ff-only`).
+    Elle refuse de démarrer s'il reste des modifications non commitées.
+  - **Le mot de passe vault** est demandé une seule fois, et vérifié tout de suite.
+  - **Ensuite**, on enchaîne les opérations :
+    - secrets Docker (`swarm_secrets`) ;
+    - variables vault seules, comme celles de `backup_credentials` ;
+    - secrets générés sur le serveur (`swarm_secrets_generated`) ;
+    - tokens de registre ;
+    - configuration des sauvegardes : dépôt, mot de passe, accès S3, et
+      `backup.yml` s'il n'existe pas ;
+    - suppressions, refusées tant qu'une stack ou une variable s'en sert.
+  - **Une valeur générée** (lettres et chiffres, 32 par défaut) n'est jamais
+    affichée. Elle passe par le presse-papier (`wl-copy`, `xclip`, `xsel` ou
+    `pbcopy`) le temps de la ranger, puis le presse-papier est vidé.
+  - **Rien n'est écrit avant la fin**, et un Ctrl-C à tout moment n'écrit rien. À
+    la fin viennent un récapitulatif, puis l'écriture et `infra-mcp lint`. Le
+    lint ne bloque que sur ce que ces changements ajoutent ; s'il bloque, les
+    fichiers sont remis comme avant.
+  - **Enfin**, la commande committe sur une branche `vault/<date>`, sans aucune
+    valeur dans le message, pousse la branche et affiche le lien pour ouvrir la PR.
+  - **Après la suppression d'un secret Docker**, le swarm le garde :
+    `docker secret rm` sur un manager.
+
+  Pour un seul secret, ou une valeur lue sur l'entrée standard :
 
   ```bash
   infra-mcp secret set playtrail_mailer_dsn        # valeur saisie sans écho
@@ -198,7 +222,7 @@ Les étages suivent l'inventaire : `group_vars/all.yml` → `group_vars/<groupe>
   stack qui l'utilise, puis à committer. Pour installer seulement la commande :
   `pipx install "infra-mcp @ git+https://github.com/<owner>/mcp-admin@<commit>"`.
   `ansible-vault edit inventory/group_vars/swarm_managers/vault.yml` reste
-  possible pour le reste (retirer une variable, par exemple).
+  possible pour le reste (une valeur sur plusieurs lignes, par exemple).
 - **Secrets générés** : pour une valeur qui doit seulement être secrète et
   stable (clé d'application, mot de passe entre deux conteneurs), il suffit de
   lister son nom dans `swarm_secrets_generated`. Le secret Docker est créé avec
