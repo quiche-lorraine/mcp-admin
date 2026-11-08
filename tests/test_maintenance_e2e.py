@@ -109,8 +109,10 @@ def test_status(infra):
 def test_stack_status_et_logs(infra):
     s = call("stack_status", stack=STACK)["mgr"]
     assert s[f"{STACK}_web"]["desired"] == 2 and s[f"{STACK}_web"]["running"] == 2, s
-    lines = call("logs", source=f"docker:{STACK}_web", lines=20, since="1h")["mgr"]["lines"]
+    logs = call("logs", source=f"docker:{STACK}_web", lines=20, since="1h")["mgr"]
+    lines = logs["lines"]
     assert any("Starting up on port 80" in line for line in lines), lines
+    assert "timeout" not in logs, logs
     assert call("logs", source=f"docker:{STACK}_web", grep="introuvable")["mgr"]["lines"] == []
     # Docker ne connaît pas l'unité « jour » : le socle la convertit en heures.
     lines = call("logs", source=f"docker:{STACK}_web", lines=20, since="1d")["mgr"]["lines"]

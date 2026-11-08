@@ -318,6 +318,7 @@ reste (valeurs simples par étage, listes additionnées) :
 monitoring_disk_alert_pct: 85     # alerte au-delà
 monitoring_memory_alert_mb: 150   # alerte sous cette mémoire disponible
 monitoring_logs_since: 24h        # fenêtre de lecture des logs
+monitoring_logs_timeout: 60       # secondes au plus par journal ou service lu
 monitoring_error_pattern: '\b(err|error|crit|critical|fatal|panic|exception|traceback)\b'
 monitoring_units_global: [crowdsec.service]   # journaux lus en plus de ceux d'infra-mcp
 monitoring_ignore_global: ['deprecated']      # lignes jamais comptées (expressions)
@@ -341,6 +342,13 @@ swarm_stacks:
 ```
 
 Les expressions sont insensibles à la casse et vérifiées par le lint.
+
+Chaque lecture est bornée par `monitoring_logs_timeout`. `docker service logs`
+peut rester bloqué sans fin, par exemple sur une tâche dont le conteneur a
+disparu à un redémarrage : le service est alors signalé (« logs de … illisibles »)
+au lieu de bloquer tout le passage. Le blocage disparaît quand cette tâche sort
+de la fenêtre lue, ou de l'historique des tâches du swarm. L'outil `logs` a la
+même limite (60 s) et renvoie alors `timeout` avec ce qu'il a pu lire.
 
 ## Commandes d'application (app_query, app_command)
 

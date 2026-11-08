@@ -130,7 +130,9 @@ async def logs(source: str, host: str | None = None, lines: int = 100, since: st
                                       limit=maintenance.check_host(host))
     else:
         hosts = await maintenance.run("service_logs", {**extra, "maintenance_service": name})
-    return _by_host(hosts, lambda r: {"lines": maintenance.filter_log_lines(r.get("lines", []), grep)})
+    return _by_host(hosts, lambda r: {"lines": maintenance.filter_log_lines(r.get("lines", []), grep),
+                                      **({"timeout": "lecture interrompue au bout de 60 s : logs incomplets"}
+                                         if r.get("timeout") else {})})
 
 
 @mcp.tool(annotations=READ, auth=require_scopes("read"))

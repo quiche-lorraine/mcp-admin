@@ -62,12 +62,16 @@ def monitoring_findings(results, error_pattern, ignore):
         else:
             name, pattern, skip = item, error_pattern, ignore
         lines = (res.get("stdout_lines") or []) + (res.get("stderr_lines") or [])
-        if not lines:
+        # timeout(1) : 124 au délai, 137 si la lecture a dû être tuée.
+        timed_out = res.get("rc") in (124, 137)
+        if not lines and not timed_out:
             continue
         # Lignes horodatées : le tri remet stdout et stderr dans l'ordre.
-        if re.match(r"^\d{4}-\d\d-\d\d", lines[0]):
+        if lines and re.match(r"^\d{4}-\d\d-\d\d", lines[0]):
             lines = sorted(lines)
         found[name] = error_lines(lines, pattern, skip)
+        if timed_out:
+            found[name]["timeout"] = True
     return found
 
 

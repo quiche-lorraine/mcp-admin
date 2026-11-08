@@ -14,9 +14,14 @@
           - maintenance_since is match('^[0-9]+[smhd]$')
         quiet: true
 
+    # Délai borné, comme dans maintenance_health : docker service logs reste
+    # parfois bloqué. Ce qui a été lu est renvoyé, avec timeout: true.
     - name: Logs
       ansible.builtin.command:
         argv:
+          - timeout
+          - --kill-after=5
+          - "60"
           - docker
           - service
           - logs
@@ -28,6 +33,7 @@
           - "{{ maintenance_service }}"
       register: _logs
       changed_when: false
+      failed_when: _logs.rc not in [0, 124, 137]
       vars:
         # Docker lit une durée Go, sans unité « jour » : 1d devient 24h.
         _since: >-
@@ -42,3 +48,4 @@
           # Les conteneurs écrivent sur les deux sorties : le serveur les fusionne
           # par horodatage.
           lines: "{{ _logs.stdout_lines + _logs.stderr_lines }}"
+          timeout: "{{ _logs.rc in [124, 137] }}"

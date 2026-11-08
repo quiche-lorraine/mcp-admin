@@ -236,7 +236,8 @@ def filter_log_lines(lines: list[str], grep: str | None) -> list[str]:
 
 
 def _redact_findings(findings: dict) -> dict:
-    return {name: {"count": f.get("count", 0), "last": [redact_log(line) for line in f.get("last") or []]}
+    return {name: {"count": f.get("count", 0), "last": [redact_log(line) for line in f.get("last") or []],
+                   **({"timeout": True} if f.get("timeout") else {})}
             for name, f in (findings or {}).items()}
 
 
@@ -273,6 +274,8 @@ def summarize_health(status_hosts: dict, health_hosts: dict) -> dict:
         logs = _redact_findings(report.get("units"))
         alerts += [f"{host} : {f['count']} ligne(s) d'erreur depuis {since} dans le journal de {unit}"
                    for unit, f in logs.items() if f["count"]]
+        alerts += [f"{host} : journal de {unit} illisible (lecture interrompue au délai)"
+                   for unit, f in logs.items() if f.get("timeout")]
         hosts[host] = {**state, "logs": logs}
         alerts += report.get("backup_alerts") or []
         service_logs = _redact_findings(report.get("services"))
@@ -288,5 +291,8 @@ def summarize_health(status_hosts: dict, health_hosts: dict) -> dict:
                     if svc["logs"]["count"]:
                         alerts.append(f"stack {stack} : {svc['logs']['count']} ligne(s) d'erreur depuis "
                                       f"{since} dans les logs de {name}")
+                    if svc["logs"].get("timeout"):
+                        alerts.append(f"stack {stack} : logs de {name} illisibles (docker service logs "
+                                      f"interrompu au délai, README « Surveillance »)")
             stacks[stack] = services
     return {"ok": not alerts, "alerts": alerts, "hosts": hosts, "stacks": stacks}

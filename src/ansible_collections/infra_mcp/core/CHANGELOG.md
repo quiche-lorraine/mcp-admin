@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.1
+
+- `maintenance_health` et `maintenance_service_logs` : chaque lecture de journal
+  ou de logs de service est bornée (`monitoring_logs_timeout`, 60 s par défaut ;
+  60 s pour l'outil `logs`). Un `docker service logs` bloqué donne une alerte
+  « logs illisibles » au lieu de faire échouer tout `health` au délai d'Ansible.
+
 ## 0.12.0
 
 - `maintenance_backup` (outil `backup_run`, passage planifié chaque nuit) et
