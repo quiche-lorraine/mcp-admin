@@ -8,6 +8,9 @@
 #   monitoring_disk_alert_pct: 85     alerte au-delà de ce taux de remplissage
 #   monitoring_memory_alert_mb: 150   alerte sous cette mémoire disponible
 #   monitoring_logs_since: 24h        fenêtre de lecture des logs
+#   monitoring_logs_timeout: 60       secondes au plus par lecture (docker service
+#                                     logs peut rester bloqué : alerte, sans bloquer
+#                                     le reste du passage)
 #   monitoring_error_pattern          expression d'une ligne d'erreur (casse ignorée)
 #   monitoring_units_*                unités systemd dont on lit le journal, en
 #                                     plus de celles d'infra-mcp (absentes : sautées)
@@ -32,6 +35,7 @@
     _default_pattern: '\b(err|error|crit|critical|fatal|panic|exception|traceback)\b'
     _pattern: "{{ monitoring_error_pattern | default(_default_pattern) }}"
     _ignore: "{{ query('ansible.builtin.vars', *query('ansible.builtin.varnames', '^monitoring_ignore_')) | flatten | unique }}"
+    _logs_timeout: "{{ monitoring_logs_timeout | default(60) | int }}"
   tasks:
     - name: Paramètres valides
       ansible.builtin.assert:
@@ -39,11 +43,15 @@
           - _since is match('^[0-9]+[smhd]$')
           - monitoring_disk_alert_pct | default(85) | int > 0
           - monitoring_memory_alert_mb | default(150) | int >= 0
+          - _logs_timeout | int >= 5 and _logs_timeout | int <= 600
         quiet: true
 
     - name: Journaux
       ansible.builtin.command:
         argv:
+          - timeout
+          - --kill-after=5
+          - "{{ _logs_timeout }}"
           - journalctl
           - --unit={{ item }}
           - --since=-{{ _since }}
@@ -81,9 +89,15 @@
         label: "{{ item.name }}"
       register: _stacks
 
+    # Délai borné : docker service logs reste parfois bloqué (tâche dont le
+    # conteneur a disparu, vu après un redémarrage). Le service est alors signalé
+    # (logs illisibles) et le passage continue.
     - name: Logs des services
       ansible.builtin.command:
         argv:
+          - timeout
+          - --kill-after=5
+          - "{{ _logs_timeout }}"
           - docker
           - service
           - logs

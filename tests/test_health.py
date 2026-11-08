@@ -54,10 +54,16 @@ def test_constats():
         {"item": "absente.service", "stdout_lines": []},
         {"item": {"name": "app_php", "error_pattern": "boom", "ignore": []},
          "stdout_lines": ["2026-10-29T08:00:02Z boom 2"], "stderr_lines": ["2026-10-29T08:00:01Z boom 1"]},
+        # Lecture interrompue par timeout(1) : signalée, même sans rien de lu.
+        {"item": {"name": "app_bloque", "error_pattern": "boom", "ignore": []}, "rc": 124, "stdout_lines": []},
+        {"item": {"name": "app_tue", "error_pattern": "boom", "ignore": []}, "rc": 137,
+         "stdout_lines": ["2026-10-29T08:00:03Z boom 3"]},
     ]
     assert f.monitoring_findings(results, PATTERN, []) == {
         "infra-mcp.service": {"count": 1, "last": ["2026-10-29T08:00:00 error a"]},
         "app_php": {"count": 2, "last": ["2026-10-29T08:00:01Z boom 1", "2026-10-29T08:00:02Z boom 2"]},
+        "app_bloque": {"count": 0, "last": [], "timeout": True},
+        "app_tue": {"count": 1, "last": ["2026-10-29T08:00:03Z boom 3"], "timeout": True},
     }
 
 
@@ -105,6 +111,19 @@ def test_alertes_et_seuils_surcharges():
     ]
     assert r["hosts"]["ctl"]["logs"]["infra-mcp.service"]["last"] == ["token=*** error"]
     assert r["hosts"]["w1"] == {"error": "injoignable : timeout"}
+
+
+def test_logs_illisibles():
+    health = {"report": {"since": "24h",
+                         "units": {"infra-mcp.service": {"count": 0, "last": [], "timeout": True}},
+                         "stacks": {"app": _tasks("app_php.1")},
+                         "services": {"app_php": {"count": 0, "last": [], "timeout": True}}}}
+    r = m.summarize_health({"ctl": _status()}, {"ctl": health})
+    assert r["alerts"] == [
+        "ctl : journal de infra-mcp.service illisible (lecture interrompue au délai)",
+        "stack app : logs de app_php illisibles (docker service logs interrompu au délai, README « Surveillance »)",
+    ]
+    assert r["stacks"]["app"]["app_php"]["logs"] == {"count": 0, "last": [], "timeout": True}
 
 
 def test_rapports_de_plusieurs_plays():
